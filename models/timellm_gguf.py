@@ -744,7 +744,15 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
                 
-                nf.fit(df=df)
+                # Определяем val_size для early stopping
+                # NeuralForecast требует val_size > 0 при использовании early stopping
+                if use_early_stop:
+                    # Используем 20% данных для валидации (минимум 2 точки)
+                    val_size = max(2, int(len(data) * 0.2))
+                    print(f"📊 Валидационный набор: {val_size} точек (для early stopping)")
+                    nf.fit(df=df, val_size=val_size)
+                else:
+                    nf.fit(df=df)
                 
                 # Синхронизация после обучения
                 if torch.cuda.is_available():
