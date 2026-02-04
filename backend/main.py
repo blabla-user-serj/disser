@@ -261,7 +261,21 @@ async def forecast(
                 neuralforecast_model=llm_model
             )
         elif model_type == 'hybrid':
-            model = HybridModel()
+            # Гибридная модель: SARIMA + XGBoost + TimeLLM
+            # Используем SLM для TimeLLM если доступен GPU
+            use_slm = torch.cuda.is_available()
+            
+            if use_slm:
+                print(f"🤖 HybridModel: будет использовать TimeLLM с NeuralForecast + SLM '{llm_model}'")
+                print(f"   GPU доступен, используем современную SLM модель")
+            else:
+                print(f"⚡ HybridModel: будет использовать TimeLLM в Simple режиме")
+                print(f"   GPU недоступен, используем статистический режим")
+            
+            model = HybridModel(
+                use_slm=use_slm,
+                slm_model=llm_model  # Передаём выбранную пользователем SLM
+            )
         else:
             raise HTTPException(400, f"Неизвестная модель: {model_type}")
         
