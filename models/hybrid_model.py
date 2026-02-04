@@ -216,8 +216,13 @@ class HybridModel:
         """
         Обновление весов моделей по формулам 2.5, 2.7, 2.11
         
-        Формула 2.7: ER_i(t) = λ × ER_i(t-1) + (1-λ) × |y - ŷ_i|
+        Формула 2.7: ER_i(t) = λ × ER_i(t-1) + (1-λ) × NormMAE_i
         Формула 2.5/2.11: w_i(t) = exp(-β × ER_i(t) × α(n)) / Σ exp(...)
+        
+        ВАЖНО: Используются НОРМАЛИЗОВАННЫЕ ошибки (деление на масштаб данных),
+        чтобы exp(-β × ER) не обращался в ноль при больших абсолютных MAE.
+        
+        NormMAE = MAE / scale, где scale = max(|data|) или std(data)
         
         С параметрами:
         - β = 1.2 (чувствительность)
@@ -228,22 +233,41 @@ class HybridModel:
         alpha = self._alpha_correction(n)
         kappa = self._kappa_correction(n)
         
+        # Вычисляем масштаб данных для нормализации ошибок
+        # Используем max(std, |mean|) для робастности
+        data_std = np.std(self.data)
+        data_mean_abs = np.abs(np.mean(self.data))
+        scale = max(data_std, data_mean_abs * 0.1, 1.0)  # Защита от деления на ноль
+        
         print(f"📐 Коэффициенты: α(n={n}) = {alpha:.4f}, κ(n) = {kappa:.4f}")
+        print(f"📏 Масштаб для нормализации ошибок: {scale:.4f}")
+        
+        # Нормализуем ошибки
+        normalized_errors = {}
+        for model in ['sarima', 'xgboost', 'timellm']:
+            raw_error = errors.get(model, 0)
+            if raw_error == float('inf'):
+                normalized_errors[model] = 10.0  # Штраф за неработающую модель
+            else:
+                normalized_errors[model] = raw_error / scale
+            print(f"   {model}: MAE={raw_error:.4f} → NormMAE={normalized_errors[model]:.4f}")
         
         # Формула 2.7: Обновление истории ошибок с экспоненциальным сглаживанием
         for model in ['sarima', 'xgboost', 'timellm']:
             self.error_history[model] = (
                 self.decay_factor * self.error_history[model] + 
-                (1 - self.decay_factor) * errors.get(model, 0)
+                (1 - self.decay_factor) * normalized_errors[model]
             )
         
         # Формула 2.5/2.11: Вычисление весов
         # w_i = exp(-β × ER_i × α × κ) / Σ
         exp_weights = {}
         for model in ['sarima', 'xgboost', 'timellm']:
-            exp_weights[model] = np.exp(
-                -self.BETA * self.error_history[model] * alpha * kappa
-            )
+            exponent = -self.BETA * self.error_history[model] * alpha * kappa
+            # Ограничиваем экспоненту для численной стабильности
+            exponent = max(exponent, -50)  # exp(-50) ≈ 1.9e-22, достаточно малое
+            exp_weights[model] = np.exp(exponent)
+            print(f"   {model}: exp({exponent:.4f}) = {exp_weights[model]:.6f}")
         
         # Нормализация
         total = sum(exp_weights.values())
@@ -253,8 +277,25 @@ class HybridModel:
                 self.weights[model] = exp_weights[model] / total
         else:
             # Fallback: равные веса
+            print("⚠️ Сумма весов = 0, используем равные веса")
             for model in ['sarima', 'xgboost', 'timellm']:
                 self.weights[model] = 1/3
+        
+        # Проверка: минимальный вес не должен быть меньше 0.05
+        MIN_WEIGHT = 0.05
+        needs_redistribution = any(w < MIN_WEIGHT and w > 0 for w in self.weights.values())
+        
+        if needs_redistribution:
+            print(f"🔄 Применяем минимальный порог веса {MIN_WEIGHT}")
+            # Устанавливаем минимальные веса и перенормируем
+            for model in self.weights:
+                if self.weights[model] < MIN_WEIGHT:
+                    self.weights[model] = MIN_WEIGHT
+            
+            # Перенормируем
+            total = sum(self.weights.values())
+            for model in self.weights:
+                self.weights[model] /= total
     
     # ==================== СОЗДАНИЕ/УДАЛЕНИЕ TimeLLM ====================
     
