@@ -21,22 +21,17 @@ class HybridModel:
             use_slm: использовать ли SLM модели (NeuralForecast)
             slm_model: какую SLM модель использовать (qwen2-0.5b, llama3.2-1b, gemma-2b и т.д.)
         """
+        # Сохраняем параметры для отложенной инициализации TimeLLM
+        self.use_cv = use_cv
+        self.n_splits = n_splits
+        self.use_slm = use_slm
+        self.slm_model = slm_model
+        
         self.sarima = SARIMAXS(use_cv=use_cv, n_splits=n_splits)
         self.xgboost = XGBoostTS(use_cv=use_cv, n_splits=n_splits)
         
-        # TimeLLM с выбором режима
-        if use_slm:
-            # Используем NeuralForecast с современными SLM 2024-2025
-            # По умолчанию: Qwen2-0.5B (500M) - самая лёгкая и быстрая
-            print(f"🤖 HybridModel: используется TimeLLM с NeuralForecast + SLM '{slm_model}'")
-            self.timellm = TimeLLM(
-                llm_backend="neuralforecast", 
-                neuralforecast_model=slm_model
-            )
-        else:
-            # Используем Simple режим (быстро, без GPU)
-            print("⚡ HybridModel: используется TimeLLM в Simple режиме (без GPU)")
-            self.timellm = TimeLLM(llm_backend="simple")
+        # TimeLLM создаётся позже при обучении, чтобы контролировать память GPU
+        self.timellm = None
         
         self.decay_factor = decay_factor  # λ для экспоненциального сглаживания
         
@@ -53,6 +48,55 @@ class HybridModel:
         }
         
         self.data = None
+    
+    def _create_timellm(self):
+        """Создание TimeLLM модели с предварительной очисткой GPU памяти"""
+        # КРИТИЧНО: Полная очистка GPU памяти перед созданием TimeLLM
+        if torch.cuda.is_available():
+            print("🧹 Очистка GPU памяти перед созданием TimeLLM...")
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            gc.collect()
+            torch.cuda.empty_cache()
+            
+            allocated = torch.cuda.memory_allocated(0) / 1024**3
+            reserved = torch.cuda.memory_reserved(0) / 1024**3
+            print(f"📊 GPU память: выделено={allocated:.2f} GB, зарезервировано={reserved:.2f} GB")
+        
+        if self.use_slm:
+            print(f"🤖 Создание TimeLLM с NeuralForecast + SLM '{self.slm_model}'")
+            return TimeLLM(
+                llm_backend="neuralforecast", 
+                neuralforecast_model=self.slm_model
+            )
+        else:
+            print("⚡ Создание TimeLLM в Simple режиме (без GPU)")
+            return TimeLLM(llm_backend="simple")
+    
+    def _destroy_timellm(self):
+        """Полное удаление TimeLLM и освобождение GPU памяти"""
+        if self.timellm is not None:
+            print("🗑️ Удаление TimeLLM модели...")
+            
+            # Удаляем внутреннюю модель NeuralForecast
+            if hasattr(self.timellm, 'model') and self.timellm.model is not None:
+                del self.timellm.model
+                self.timellm.model = None
+            
+            del self.timellm
+            self.timellm = None
+        
+        # Полная очистка GPU памяти
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            gc.collect()
+            torch.cuda.empty_cache()
+            
+            allocated = torch.cuda.memory_allocated(0) / 1024**3
+            reserved = torch.cuda.memory_reserved(0) / 1024**3
+            print(f"🧹 GPU память после удаления: выделено={allocated:.2f} GB, зарезервировано={reserved:.2f} GB")
         
     def _correction_factor(self, n):
         """Коэффициент коррекции на основе размера выборки"""
@@ -93,85 +137,142 @@ class HybridModel:
                 self.weights[model] = 1/3
     
     def fit(self, data):
-        """Обучение всех моделей"""
+        """
+        Обучение всех моделей с последовательной валидацией.
+        
+        Для честной оценки весов TimeLLM обучается дважды:
+        1. На train_data для валидации (затем удаляется)
+        2. На полных данных для финального использования
+        
+        Это обеспечивает корректную оценку ошибок для взвешивания ансамбля.
+        """
         self.data = data
-        
-        # Обучение каждой модели
-        try:
-            self.sarima.fit(data)
-        except Exception as e:
-            print(f"Warning: SARIMA не обучена: {e}")
-        
-        try:
-            self.xgboost.fit(data)
-        except Exception as e:
-            print(f"Warning: XGBoost не обучена: {e}")
-        
-        try:
-            self.timellm.fit(data)
-        except Exception as e:
-            print(f"Warning: TimeLLM не обучена: {e}")
-        
-        # Вычисление начальных ошибок (на обучающих данных)
-        # ВАЖНО: Для TimeLLM НЕ создаём отдельную модель для валидации,
-        # чтобы избежать CUDA OOM (двойная загрузка LLM в GPU память)
         n = len(data)
-        if n > 10:
-            # Используем последние 20% для валидации
+        
+        # Определяем нужна ли валидация для весов
+        need_validation = n > 10
+        
+        if need_validation:
             split = int(0.8 * n)
             train_data = data[:split]
             val_data = data[split:]
             val_steps = len(val_data)
-            
-            errors = {}
-            
-            # SARIMA - создаём временную модель (лёгкая, не использует GPU)
-            try:
-                temp_sarima = SARIMAXS(use_cv=False)  # Без CV для скорости
+        
+        errors = {}
+        
+        # ==================== SARIMA ====================
+        print("\n" + "="*50)
+        print("📊 Обучение SARIMA...")
+        print("="*50)
+        
+        try:
+            if need_validation:
+                # Валидация на train/val split
+                temp_sarima = SARIMAXS(use_cv=False)
                 temp_sarima.fit(train_data)
                 pred = temp_sarima.predict(val_steps, return_conf_int=False)['forecast']
                 errors['sarima'] = np.mean(np.abs(val_data - pred))
+                print(f"✅ SARIMA валидация: MAE = {errors['sarima']:.4f}")
                 del temp_sarima
-            except Exception as e:
-                print(f"⚠️ SARIMA validation error: {e}")
-                errors['sarima'] = 0
             
-            # XGBoost - создаём временную модель (относительно лёгкая)
-            try:
-                temp_xgb = XGBoostTS(use_cv=False)  # Без CV для скорости
+            # Обучение на полных данных
+            self.sarima.fit(data)
+            print("✅ SARIMA обучена на полных данных")
+            
+        except Exception as e:
+            print(f"⚠️ SARIMA ошибка: {e}")
+            errors['sarima'] = float('inf')
+        
+        # ==================== XGBoost ====================
+        print("\n" + "="*50)
+        print("📊 Обучение XGBoost...")
+        print("="*50)
+        
+        try:
+            if need_validation:
+                # Валидация на train/val split
+                temp_xgb = XGBoostTS(use_cv=False)
                 temp_xgb.fit(train_data)
                 pred = temp_xgb.predict(val_steps, return_conf_int=False)['forecast']
                 errors['xgboost'] = np.mean(np.abs(val_data - pred))
+                print(f"✅ XGBoost валидация: MAE = {errors['xgboost']:.4f}")
                 del temp_xgb
-            except Exception as e:
-                print(f"⚠️ XGBoost validation error: {e}")
-                errors['xgboost'] = 0
             
-            # TimeLLM - НЕ создаём временную модель!
-            # Это вызывает CUDA OOM, так как LLM уже загружен в память
-            # Вместо этого используем приближённую оценку на основе уже обученной модели
-            try:
-                # Используем уже обученную модель self.timellm
-                # Прогнозируем на валидационной части
-                print("📊 TimeLLM: используем обученную модель для оценки ошибок (без повторного обучения)")
-                pred = self.timellm.predict(val_steps, return_conf_int=False)['forecast']
-                # Оценка ошибки (приближённая, но не требует повторного обучения)
+            # Обучение на полных данных
+            self.xgboost.fit(data)
+            print("✅ XGBoost обучена на полных данных")
+            
+        except Exception as e:
+            print(f"⚠️ XGBoost ошибка: {e}")
+            errors['xgboost'] = float('inf')
+        
+        # ==================== TimeLLM ====================
+        print("\n" + "="*50)
+        print("📊 Обучение TimeLLM...")
+        print("="*50)
+        
+        try:
+            if need_validation and self.use_slm:
+                # ШАГ 1: Валидация - обучаем TimeLLM на train_data
+                print("🔄 Этап 1: Валидация TimeLLM на train_data...")
+                self._destroy_timellm()  # Убедимся что память свободна
+                
+                temp_timellm = self._create_timellm()
+                temp_timellm.fit(train_data)
+                pred = temp_timellm.predict(val_steps, return_conf_int=False)['forecast']
+                
                 if len(pred) >= val_steps:
                     errors['timellm'] = np.mean(np.abs(val_data - pred[:val_steps]))
                 else:
-                    # Если прогноз короче, используем среднюю ошибку
                     errors['timellm'] = np.mean(np.abs(val_data[:len(pred)] - pred))
-            except Exception as e:
-                print(f"⚠️ TimeLLM validation error: {e}")
-                errors['timellm'] = 0
+                
+                print(f"✅ TimeLLM валидация: MAE = {errors['timellm']:.4f}")
+                
+                # Удаляем временную модель и освобождаем GPU память
+                del temp_timellm
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    allocated = torch.cuda.memory_allocated(0) / 1024**3
+                    print(f"🧹 GPU память после валидации: {allocated:.2f} GB")
+                
+                # ШАГ 2: Обучение на полных данных
+                print("🔄 Этап 2: Обучение TimeLLM на полных данных...")
             
-            # Очищаем GPU память после валидации
-            if torch.cuda.is_available():
-                clear_gpu_memory_completely()
-            gc.collect()
+            # Создаём и обучаем финальную модель
+            self.timellm = self._create_timellm()
+            self.timellm.fit(data)
+            print("✅ TimeLLM обучена на полных данных")
             
-            # Обновление весов
+        except Exception as e:
+            print(f"⚠️ TimeLLM ошибка: {e}")
+            errors['timellm'] = float('inf')
+            # Создаём fallback Simple модель
+            self.timellm = TimeLLM(llm_backend="simple")
+            self.timellm.fit(data)
+        
+        # ==================== Обновление весов ====================
+        if need_validation:
+            print("\n" + "="*50)
+            print("📊 Обновление весов ансамбля...")
+            print("="*50)
+            print(f"   SARIMA MAE:  {errors.get('sarima', 'N/A')}")
+            print(f"   XGBoost MAE: {errors.get('xgboost', 'N/A')}")
+            print(f"   TimeLLM MAE: {errors.get('timellm', 'N/A')}")
+            
             self._update_weights(errors)
+            
+            print(f"\n📊 Итоговые веса:")
+            print(f"   SARIMA:  {self.weights['sarima']:.4f}")
+            print(f"   XGBoost: {self.weights['xgboost']:.4f}")
+            print(f"   TimeLLM: {self.weights['timellm']:.4f}")
+        
+        print("\n" + "="*50)
+        print("✅ Гибридная модель обучена")
+        print("="*50 + "\n")
         
         return self
     

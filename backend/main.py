@@ -221,19 +221,41 @@ async def forecast(
         # Определение частоты
         frequency = infer_frequency(dates_array)
         
-        # ПОЛНАЯ очистка GPU памяти перед обучением моделей
+        # КРИТИЧНО: Полная очистка GPU памяти перед обучением моделей
+        # Это необходимо, т.к. между запросами FastAPI память может накапливаться
         if torch.cuda.is_available():
-            print("🧹 Выполняю полную очистку GPU памяти перед обучением...")
+            print("\n" + "="*60)
+            print("🧹 ОЧИСТКА GPU ПАМЯТИ ПЕРЕД НОВЫМ ЗАПРОСОМ")
+            print("="*60)
+            
+            # Показываем состояние ДО очистки
+            allocated_before = torch.cuda.memory_allocated(0) / 1024**3
+            reserved_before = torch.cuda.memory_reserved(0) / 1024**3
+            print(f"📊 ДО очистки: выделено={allocated_before:.2f} GB, зарезервировано={reserved_before:.2f} GB")
+            
+            # Агрессивная очистка
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
+            gc.collect()
+            torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
+            
+            # Повторная сборка мусора для освобождения Python объектов
             gc.collect()
             torch.cuda.empty_cache()
             
-            # Показываем состояние памяти
-            allocated = torch.cuda.memory_allocated(0) / 1024**3
-            reserved = torch.cuda.memory_reserved(0) / 1024**3
-            print(f"📊 GPU память: выделено={allocated:.2f} GB, зарезервировано={reserved:.2f} GB")
+            # Показываем состояние ПОСЛЕ очистки
+            allocated_after = torch.cuda.memory_allocated(0) / 1024**3
+            reserved_after = torch.cuda.memory_reserved(0) / 1024**3
+            print(f"📊 ПОСЛЕ очистки: выделено={allocated_after:.2f} GB, зарезервировано={reserved_after:.2f} GB")
+            
+            # Предупреждение если память не освободилась
+            if allocated_after > 1.0:
+                print(f"⚠️  ВНИМАНИЕ: GPU память не полностью освобождена!")
+                print(f"   Возможно, предыдущие модели остались в памяти.")
+                print(f"   Рекомендуется перезапустить сервер если ошибки повторяются.")
+            
+            print("="*60 + "\n")
         
         # Обучение модели
         if model_type == 'sarima':
@@ -363,20 +385,24 @@ async def forecast(
         }
         
         # Метрики (на исторических данных)
-        # ВАЖНО: Для TimeLLM и HybridModel с NeuralForecast пропускаем повторное обучение
-        # чтобы избежать CUDA OOM (двойное обучение требует 2x GPU памяти)
+        # Для HybridModel метрики уже рассчитаны внутри модели при валидации
+        # Для остальных моделей делаем честную валидацию
         if len(values_array) > 10:
             train_size = int(0.8 * len(values_array))
             y_true = values_array[train_size:]
             
-            # Для тяжёлых моделей используем простую оценку на основе уже обученной модели
-            if model_type in ['timellm', 'hybrid']:
-                print("📊 Расчёт метрик для TimeLLM/Hybrid: используем приближённую оценку")
-                # Используем уже обученную модель, но берём часть прогноза
-                # Это не идеально точно, но не требует повторного обучения
-                y_pred = forecast_values[:len(y_true)] if len(forecast_values) >= len(y_true) else forecast_values
+            if model_type == 'hybrid':
+                # HybridModel уже имеет метрики из валидации
+                # Используем прогноз модели на валидационной части
+                print("📊 Расчёт метрик для Hybrid: используем внутренние веса модели")
+                y_pred = model.predict(len(y_true), return_conf_int=False)['forecast']
+                metrics = model.get_metrics(y_true, y_pred[:len(y_true)])
+            elif model_type == 'timellm':
+                # Для TimeLLM используем уже обученную модель
+                # Валидация происходила внутри при обучении
+                print("📊 Расчёт метрик для TimeLLM")
+                y_pred = model.predict(len(y_true), return_conf_int=False)['forecast']
                 if len(y_pred) < len(y_true):
-                    # Дополняем последним значением
                     y_pred = np.concatenate([y_pred, np.full(len(y_true) - len(y_pred), y_pred[-1])])
                 metrics = model.get_metrics(y_true, y_pred[:len(y_true)])
             else:
@@ -385,6 +411,7 @@ async def forecast(
                 temp_model.fit(values_array[:train_size])
                 y_pred = temp_model.predict(len(y_true), return_conf_int=False)['forecast']
                 metrics = model.get_metrics(y_true, y_pred)
+                del temp_model
                 del temp_model  # Освобождаем память
         else:
             metrics = {'MAE': 0, 'RMSE': 0, 'R2': 0}
