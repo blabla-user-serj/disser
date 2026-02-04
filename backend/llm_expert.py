@@ -244,38 +244,53 @@ class LLMExpert:
             web_context = self._fetch_web_context(web_urls)
         
         # Формируем промпт
-        instructions = """Ты эксперт по анализу временных рядов и прогнозированию. 
-Твоя задача - проанализировать прогноз и вернуть коррекцию в формате JSON.
-
-ВАЖНО: Отвечай ТОЛЬКО валидным JSON, без дополнительного текста."""
+        instructions = (
+            "Ты эксперт по анализу временных рядов и прогнозированию. "
+            "Твоя задача - проанализировать прогноз и вернуть коррекцию в формате JSON.\n\n"
+            "ВАЖНО: Отвечай ТОЛЬКО валидным JSON, без дополнительного текста."
+        )
         
-        prompt = f"""Проанализируй временной ряд и прогноз:
-
-ИСТОРИЧЕСКИЕ ДАННЫЕ:
-- Среднее значение: {mean_val:.2f}
-- Стандартное отклонение: {std_val:.2f}
-- Тренд: {"растёт" if trend > 0 else "падает"} ({trend:.2f} в день)
-- Последние 10 значений: {historical_data[-10:].tolist()}
-
-ПРОГНОЗ МОДЕЛИ:
-- Значения: {forecast.tolist()}
-- 95% доверительный интервал:
-  * Нижняя граница: {lower_bound.tolist()}
-  * Верхняя граница: {upper_bound.tolist()}
-
-{f"ВНЕШНИЙ КОНТЕКСТ:\n{web_context}" if web_context else ""}
-
-ЗАДАЧА:
-Верни коэффициенты коррекции для каждой точки прогноза в формате JSON:
-
-{{
-  "correction_factors": [1.0, 1.05, 0.95, ...],
-  "analysis": "краткий анализ тренда и факторов",
-  "reasoning": "почему применены эти коэффициенты"
-}}
-
-Коэффициент 1.0 = без изменений, >1.0 = увеличение, <1.0 = уменьшение.
-"""
+        # Определяем направление тренда
+        trend_direction = "растёт" if trend > 0 else "падает"
+        
+        # Блок внешнего контекста
+        web_context_block = ""
+        if web_context:
+            web_context_block = "\nВНЕШНИЙ КОНТЕКСТ:\n{}\n".format(web_context)
+        
+        # Собираем промпт через format()
+        prompt = (
+            "Проанализируй временной ряд и прогноз:\n\n"
+            "ИСТОРИЧЕСКИЕ ДАННЫЕ:\n"
+            "- Среднее значение: {mean_val:.2f}\n"
+            "- Стандартное отклонение: {std_val:.2f}\n"
+            "- Тренд: {trend_direction} ({trend:.2f} в день)\n"
+            "- Последние 10 значений: {last_values}\n\n"
+            "ПРОГНОЗ МОДЕЛИ:\n"
+            "- Значения: {forecast_values}\n"
+            "- 95% доверительный интервал:\n"
+            "  * Нижняя граница: {lower_values}\n"
+            "  * Верхняя граница: {upper_values}\n"
+            "{web_context_block}\n"
+            "ЗАДАЧА:\n"
+            "Верни коэффициенты коррекции для каждой точки прогноза в формате JSON:\n\n"
+            "{{\n"
+            '  "correction_factors": [1.0, 1.05, 0.95, ...],\n'
+            '  "analysis": "краткий анализ тренда и факторов",\n'
+            '  "reasoning": "почему применены эти коэффициенты"\n'
+            "}}\n\n"
+            "Коэффициент 1.0 = без изменений, >1.0 = увеличение, <1.0 = уменьшение."
+        ).format(
+            mean_val=mean_val,
+            std_val=std_val,
+            trend_direction=trend_direction,
+            trend=trend,
+            last_values=historical_data[-10:].tolist(),
+            forecast_values=forecast.tolist(),
+            lower_values=lower_bound.tolist(),
+            upper_values=upper_bound.tolist(),
+            web_context_block=web_context_block
+        )
         
         # Вызов YandexGPT
         llm_response = self._call_yandex_gpt(prompt, instructions)
