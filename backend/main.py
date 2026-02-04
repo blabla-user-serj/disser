@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 import json
 
 from models import SARIMAXS, XGBoostTS, TimeLLM, HybridModel
+from models.timellm_gguf import destroy_all_models, clear_gpu_memory_completely
 from backend.llm_expert import LLMExpert
 
 # Загрузка переменных окружения из .env
@@ -223,39 +224,33 @@ async def forecast(
         
         # КРИТИЧНО: Полная очистка GPU памяти перед обучением моделей
         # Это необходимо, т.к. между запросами FastAPI память может накапливаться
+        print("\n" + "="*60)
+        print("🧹 ГЛОБАЛЬНАЯ ОЧИСТКА ПЕРЕД НОВЫМ ЗАПРОСОМ")
+        print("="*60)
+        
+        # ШАГИ ОЧИСТКИ:
+        # 1. Уничтожаем ВСЕ зарегистрированные модели
+        destroy_all_models()
+        
         if torch.cuda.is_available():
-            print("\n" + "="*60)
-            print("🧹 ОЧИСТКА GPU ПАМЯТИ ПЕРЕД НОВЫМ ЗАПРОСОМ")
-            print("="*60)
-            
-            # Показываем состояние ДО очистки
+            # Показываем состояние ДО дополнительной очистки
             allocated_before = torch.cuda.memory_allocated(0) / 1024**3
             reserved_before = torch.cuda.memory_reserved(0) / 1024**3
-            print(f"📊 ДО очистки: выделено={allocated_before:.2f} GB, зарезервировано={reserved_before:.2f} GB")
+            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
             
-            # Агрессивная очистка
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            gc.collect()
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
+            print(f"📊 Состояние GPU памяти:")
+            print(f"   Выделено: {allocated_before:.2f} GB")
+            print(f"   Зарезервировано: {reserved_before:.2f} GB")
+            print(f"   Всего: {total:.2f} GB")
+            print(f"   Свободно: {total - reserved_before:.2f} GB")
             
-            # Повторная сборка мусора для освобождения Python объектов
-            gc.collect()
-            torch.cuda.empty_cache()
-            
-            # Показываем состояние ПОСЛЕ очистки
-            allocated_after = torch.cuda.memory_allocated(0) / 1024**3
-            reserved_after = torch.cuda.memory_reserved(0) / 1024**3
-            print(f"📊 ПОСЛЕ очистки: выделено={allocated_after:.2f} GB, зарезервировано={reserved_after:.2f} GB")
-            
-            # Предупреждение если память не освободилась
-            if allocated_after > 1.0:
-                print(f"⚠️  ВНИМАНИЕ: GPU память не полностью освобождена!")
-                print(f"   Возможно, предыдущие модели остались в памяти.")
-                print(f"   Рекомендуется перезапустить сервер если ошибки повторяются.")
-            
-            print("="*60 + "\n")
+            # Предупреждение если память всё ещё занята
+            if allocated_before > 1.0:
+                print(f"\n⚠️  ВНИМАНИЕ: {allocated_before:.2f}GB всё ещё выделено!")
+                print(f"   💡 Рекомендация: перезапустите сервер для полной очистки.")
+                print(f"   Модель может автоматически переключиться на Simple режим.")
+        
+        print("="*60 + "\n")
         
         # Обучение модели
         if model_type == 'sarima':
