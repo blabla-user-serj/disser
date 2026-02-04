@@ -253,7 +253,18 @@ async def forecast(
             print(f"   {str(e)}")
             import traceback
             traceback.print_exc()
-            raise HTTPException(500, f"Ошибка обучения модели {model_type}: {str(e)}")
+            
+            # Специальное сообщение для TimeLLM
+            if model_type == 'timellm':
+                error_msg = f"Ошибка обучения TimeLLM: {str(e)}\n\n"
+                error_msg += "💡 Рекомендации:\n"
+                error_msg += "- Попробуйте модель SARIMA или XGBoost (быстрее и стабильнее)\n"
+                error_msg += "- Используйте Гибридную модель для лучшего качества\n"
+                error_msg += "- Убедитесь что GPU драйверы установлены корректно\n"
+                error_msg += "- TimeLLM требует CUDA и может быть нестабильным на Windows"
+                raise HTTPException(500, error_msg)
+            else:
+                raise HTTPException(500, f"Ошибка обучения модели {model_type}: {str(e)}")
         
         # Прогнозирование с доверительными интервалами
         try:
