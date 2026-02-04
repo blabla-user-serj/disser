@@ -283,9 +283,9 @@ class LLMExpert:
         if not llm_response:
             # Fallback если LLM недоступен
             return {
-                'forecast': forecast,
-                'lower_bound': lower_bound,
-                'upper_bound': upper_bound,
+                'corrected_forecast': forecast,
+                'corrected_lower': lower_bound,
+                'corrected_upper': upper_bound,
                 'analysis': self._basic_analysis(historical_data, forecast),
                 'correction_applied': False
             }
@@ -313,18 +313,18 @@ class LLMExpert:
                 print(f"✅ Коррекция применена: {correction_factors}")
                 
                 return {
-                    'forecast': corrected_forecast,
-                    'lower_bound': corrected_lower,
-                    'upper_bound': corrected_upper,
+                    'corrected_forecast': corrected_forecast,
+                    'corrected_lower': corrected_lower,
+                    'corrected_upper': corrected_upper,
                     'analysis': analysis,
                     'correction_applied': True
                 }
             else:
                 print(f"⚠️  Несоответствие длин: {len(correction_factors)} != {len(forecast)}")
                 return {
-                    'forecast': forecast,
-                    'lower_bound': lower_bound,
-                    'upper_bound': upper_bound,
+                    'corrected_forecast': forecast,
+                    'corrected_lower': lower_bound,
+                    'corrected_upper': upper_bound,
                     'analysis': analysis,
                     'correction_applied': False
                 }
@@ -335,9 +335,9 @@ class LLMExpert:
             
             # Fallback
             return {
-                'forecast': forecast,
-                'lower_bound': lower_bound,
-                'upper_bound': upper_bound,
+                'corrected_forecast': forecast,
+                'corrected_lower': lower_bound,
+                'corrected_upper': upper_bound,
                 'analysis': self._basic_analysis(historical_data, forecast),
                 'correction_applied': False
             }
