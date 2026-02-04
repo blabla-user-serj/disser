@@ -468,21 +468,33 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             # Создаем модель TimeLLM для NeuralForecast
             # NeuralForecast автоматически использует GPU если доступен
             # Оптимизировано для RTX 4070 Ti Super (16GB VRAM)
+            # 
+            # ВАЖНО: Ограничиваем время обучения для быстрого отклика API
+            # Для production используйте max_steps=500-1000
             timellm_model = NF_TimeLLM(
                 h=horizon,
                 input_size=input_size,
                 llm=llm_model_name,
                 d_llm=d_llm_value,
                 prompt_prefix=prompt,
-                learning_rate=1e-4,  # Оптимальный learning rate
+                learning_rate=1e-3,  # Увеличен для более быстрого обучения
                 batch_size=optimal_batch_size,  # Адаптивный batch_size на основе VRAM (8 для 16GB)
+                max_steps=100,  # КРИТИЧНО: ограничиваем количество шагов (по умолчанию 1000!)
+                val_check_steps=20,  # Валидация каждые 20 шагов
+                early_stop_patience_steps=3,  # Ранняя остановка если нет улучшения
                 random_seed=42
             )
+            
+            print(f"⚙️  Параметры обучения: max_steps=100 (быстрый режим для API)")
+            print(f"   Для более качественного прогноза увеличьте max_steps до 500-1000")
             
             nf = NeuralForecast(models=[timellm_model], freq=freq)
             
             # Обучение модели
             print("🚀 Начинаю обучение модели...")
+            print(f"⏱️  Ожидаемое время: ~2-5 минут (зависит от размера данных)")
+            print(f"📊 Параметры: {len(data)} точек, horizon={horizon}, input_size={input_size}")
+            
             nf.fit(df=df)
             
             # ПОЛНАЯ очистка памяти после обучения

@@ -33,10 +33,13 @@
                     <label for="modelSelect">Модель:</label>
                     <select id="modelSelect">
                         <option value="hybrid">Гибридная (рекомендуется)</option>
-                        <option value="sarima">SARIMA-XS</option>
-                        <option value="xgboost">XGBoost</option>
-                        <option value="timellm">TimeLLM</option>
+                        <option value="sarima">SARIMA-XS (быстро)</option>
+                        <option value="xgboost">XGBoost (быстро)</option>
+                        <option value="timellm">TimeLLM (медленно, 2-10 мин)</option>
                     </select>
+                    <small id="modelWarning" style="color: #e74c3c; display: none; margin-top: 5px;">
+                        ⚠️ TimeLLM требует GPU и обучается 2-10 минут
+                    </small>
                 </div>
                 
                 <div class="config-item">
@@ -98,6 +101,16 @@
         let uploadedData = null;
         let currentChart = null;
 
+        // Обработчик выбора модели - показываем предупреждение для TimeLLM
+        document.getElementById('modelSelect').addEventListener('change', (e) => {
+            const warning = document.getElementById('modelWarning');
+            if (e.target.value === 'timellm') {
+                warning.style.display = 'block';
+            } else {
+                warning.style.display = 'none';
+            }
+        });
+
         // Загрузка файла
         document.getElementById('uploadBtn').addEventListener('click', async () => {
             const fileInput = document.getElementById('fileInput');
@@ -155,10 +168,17 @@
                 document.getElementById('forecastBtn').textContent = '⏳ Прогнозирование...';
                 document.getElementById('forecastBtn').disabled = true;
 
+                // Создаём AbortController для возможности отмены (timeout 10 минут для TimeLLM)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 минут
+
                 const response = await fetch(`${API_URL}/forecast`, {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    signal: controller.signal
                 });
+
+                clearTimeout(timeoutId);
 
                 const result = await response.json();
 
@@ -169,7 +189,11 @@
                     throw new Error('Ошибка прогнозирования');
                 }
             } catch (error) {
-                alert(`Ошибка: ${error.message}`);
+                if (error.name === 'AbortError') {
+                    alert('⏱️ Превышено время ожидания (10 минут).\n\nTimeLLM требует длительного обучения.\nПопробуйте:\n- Использовать модель SARIMA или XGBoost\n- Уменьшить количество данных');
+                } else {
+                    alert(`Ошибка: ${error.message}`);
+                }
             } finally {
                 document.getElementById('forecastBtn').textContent = '🔮 Выполнить Прогноз';
                 document.getElementById('forecastBtn').disabled = false;
