@@ -7,6 +7,11 @@ HTTP 403: Permission denied
 
 ## ✅ Решение за 3 минуты
 
+### 0️⃣ Установите openai (если ещё не установлен)
+```bash
+pip install openai>=1.0.0
+```
+
 ### 1️⃣ Откройте Yandex Cloud Console
 https://console.cloud.yandex.ru/
 
@@ -51,3 +56,9 @@ python main.py
 
 ## 📚 Полная инструкция
 См. `docs/YANDEX_GPT_SETUP.md`
+
+## 🔧 Используется новый API
+Теперь используется OpenAI-совместимый API Yandex Cloud:
+- Base URL: `https://ai.api.cloud.yandex.net/v1`
+- Метод: `responses.create()`
+- Требуется: `pip install openai>=1.0.0`
