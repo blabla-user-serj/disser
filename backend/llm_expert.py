@@ -263,7 +263,7 @@ class LLMExpert:
   * Нижняя граница: {lower_bound.tolist()}
   * Верхняя граница: {upper_bound.tolist()}
 
-{f"ВНЕШНИЙ КОНТЕКСТ:\\n{web_context}" if web_context else ""}
+{f"ВНЕШНИЙ КОНТЕКСТ:\n{web_context}" if web_context else ""}
 
 ЗАДАЧА:
 Верни коэффициенты коррекции для каждой точки прогноза в формате JSON:
