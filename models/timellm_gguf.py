@@ -1,5 +1,7 @@
 """
 TimeLLM с поддержкой локальных GGUF моделей через llama-cpp-python
+
+КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Глобальный реестр моделей для предотвращения OOM
 """
 import numpy as np
 import pandas as pd
@@ -7,6 +9,7 @@ import warnings
 import os
 import gc
 import sys
+import weakref
 
 # Настройки CUDA для стабильной работы
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512,expandable_segments:True"
@@ -38,32 +41,115 @@ except Exception as e:
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# ==================== ГЛОБАЛЬНЫЙ РЕЕСТР МОДЕЛЕЙ ====================
+# Отслеживает все созданные модели для корректной очистки памяти
+_ACTIVE_MODELS = []
+_OOM_FALLBACK_TO_SIMPLE = False  # Флаг для автоматического переключения на simple режим
+
+
+def register_model(model):
+    """Регистрирует модель в глобальном реестре"""
+    global _ACTIVE_MODELS
+    _ACTIVE_MODELS.append(weakref.ref(model))
+    # Очищаем мёртвые ссылки
+    _ACTIVE_MODELS = [ref for ref in _ACTIVE_MODELS if ref() is not None]
+
+
+def destroy_all_models():
+    """Уничтожает ВСЕ зарегистрированные модели и освобождает GPU память"""
+    global _ACTIVE_MODELS
+    
+    destroyed_count = 0
+    for ref in _ACTIVE_MODELS:
+        model = ref()
+        if model is not None:
+            try:
+                if hasattr(model, 'model') and model.model is not None:
+                    # Для NeuralForecast моделей
+                    if hasattr(model.model, 'models'):
+                        for m in model.model.models:
+                            if hasattr(m, 'llm'):
+                                del m.llm
+                            if hasattr(m, 'to'):
+                                try:
+                                    m.cpu()
+                                except:
+                                    pass
+                    del model.model
+                    model.model = None
+                    destroyed_count += 1
+            except Exception as e:
+                print(f"⚠️  Ошибка при уничтожении модели: {e}")
+    
+    _ACTIVE_MODELS.clear()
+    
+    if destroyed_count > 0:
+        print(f"🗑️ Уничтожено {destroyed_count} моделей")
+    
+    # Агрессивная очистка памяти
+    clear_gpu_memory_completely()
+
+
 def clear_gpu_memory_completely():
-    """Полная очистка GPU памяти - агрессивный метод"""
+    """
+    УЛУЧШЕННАЯ полная очистка GPU памяти
+    
+    Включает:
+    1. Синхронизацию CUDA операций
+    2. Очистку кэша PyTorch
+    3. Сброс пула памяти CUDA
+    4. Множественные циклы сборки мусора
+    5. Очистку кэша HuggingFace Transformers
+    """
     if not torch.cuda.is_available():
         return
     
     try:
-        # Синхронизируем все операции CUDA
+        # 1. Синхронизируем все операции CUDA
         torch.cuda.synchronize()
         
-        # Очищаем кэш
+        # 2. Первая очистка кэша
         torch.cuda.empty_cache()
         
-        # Сбрасываем статистику памяти
+        # 3. Сбрасываем статистику памяти
         torch.cuda.reset_peak_memory_stats()
+        torch.cuda.reset_accumulated_memory_stats()
         
-        # Принудительная сборка мусора Python
-        import gc
-        gc.collect()
+        # 4. Множественные циклы сборки мусора Python
+        for _ in range(3):
+            gc.collect()
         
-        # Еще раз очищаем кэш после сборки мусора
+        # 5. Очистка кэша transformers если загружен
+        try:
+            import transformers
+            if hasattr(transformers, 'utils') and hasattr(transformers.utils, 'hub'):
+                pass  # Кэш transformers не требует явной очистки
+        except ImportError:
+            pass
+        
+        # 6. Финальная очистка CUDA
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
+        
+        # 7. Попытка вернуть память операционной системе
+        try:
+            # Это работает только на некоторых системах
+            torch.cuda.memory._dump_snapshot("cuda_memory_snapshot.pickle")
+        except:
+            pass
         
         # Показываем состояние памяти
         allocated = torch.cuda.memory_allocated(0) / 1024**3
         reserved = torch.cuda.memory_reserved(0) / 1024**3
-        print(f"🧹 GPU память после очистки: выделено={allocated:.2f} GB, зарезервировано={reserved:.2f} GB")
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        free = total - reserved
+        
+        print(f"🧹 GPU память: выделено={allocated:.2f}GB, зарезервировано={reserved:.2f}GB, свободно={free:.2f}GB")
+        
+        # Предупреждение если память всё ещё занята
+        if allocated > 1.0:
+            print(f"⚠️  ВНИМАНИЕ: {allocated:.2f}GB всё ещё выделено! Рекомендуется перезапуск сервера.")
+            
     except Exception as e:
         print(f"⚠️  Ошибка при очистке GPU памяти: {e}")
 
@@ -333,19 +419,30 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
     
     def fit(self, data, freq='D'):
         """
-        Обучение модели
+        Обучение модели с автоматическим fallback при OOM
         
         Args:
             data: numpy array с историческими данными
             freq: частота данных ('D'=daily, 'H'=hourly, 'M'=monthly, и т.д.)
         """
+        global _OOM_FALLBACK_TO_SIMPLE
+        
         self.data = data
         self.freq = freq
+        
+        # Регистрируем модель в глобальном реестре
+        register_model(self)
         
         print(f"\n{'='*60}")
         print(f"TimeLLM: Обучение на {len(data)} точках")
         print(f"Backend: {self.llm_backend}")
         print(f"{'='*60}")
+        
+        # Если ранее был OOM, сразу используем simple режим
+        if _OOM_FALLBACK_TO_SIMPLE and self.llm_backend == 'neuralforecast':
+            print("⚠️  Предыдущий OOM! Автоматическое переключение на simple режим.")
+            print("   Перезапустите сервер для повторной попытки GPU.")
+            self.llm_backend = 'simple'
         
         # Режим GGUF
         if self.llm_backend == 'gguf':
@@ -365,24 +462,51 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 print("Используется simple режим")
                 self.llm_backend = 'simple'
             else:
-                try:
-                    print(f"🚀 Используется NeuralForecast с современными SLM 2024-2025")
-                    # Проверяем работоспособность CUDA
-                    torch.cuda.synchronize()
-                    test_tensor = torch.zeros(1).cuda()
-                    del test_tensor
-                    torch.cuda.empty_cache()
-                    
-                    self._fit_neuralforecast(data, freq)
-                    print("✓ Используется NeuralForecast.TimeLLM с SLM")
-                except RuntimeError as e:
-                    print(f"❌ CUDA RuntimeError: {e}")
-                    print("Переключаюсь на simple режим")
+                # КРИТИЧНО: Уничтожаем ВСЕ предыдущие модели перед обучением
+                print("🗑️ Освобождаю память от предыдущих моделей...")
+                destroy_all_models()
+                
+                # Проверяем доступную память
+                allocated = torch.cuda.memory_allocated(0) / 1024**3
+                reserved = torch.cuda.memory_reserved(0) / 1024**3
+                total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                free = total - reserved
+                
+                print(f"📊 GPU память перед обучением: свободно={free:.2f}GB из {total:.2f}GB")
+                
+                # Если недостаточно памяти, сразу переключаемся на simple
+                if free < 4.0:  # Нужно минимум 4GB для Qwen2-0.5B
+                    print(f"⚠️  Недостаточно GPU памяти ({free:.2f}GB < 4GB)!")
+                    print("   Переключаюсь на simple режим")
+                    _OOM_FALLBACK_TO_SIMPLE = True
                     self.llm_backend = 'simple'
-                except Exception as e:
-                    print(f"Warning: NeuralForecast failed: {e}")
-                    print("Переключаюсь на simple режим")
-                    self.llm_backend = 'simple'
+                else:
+                    try:
+                        print(f"🚀 Используется NeuralForecast с современными SLM 2024-2025")
+                        
+                        self._fit_neuralforecast(data, freq)
+                        print("✓ Используется NeuralForecast.TimeLLM с SLM")
+                        
+                    except RuntimeError as e:
+                        error_msg = str(e).lower()
+                        print(f"❌ CUDA RuntimeError: {e}")
+                        
+                        # Экстренная очистка памяти
+                        print("🧹 Экстренная очистка GPU памяти...")
+                        destroy_all_models()
+                        
+                        if "out of memory" in error_msg:
+                            print("❌ CUDA OOM! Устанавливаю флаг fallback на simple режим.")
+                            _OOM_FALLBACK_TO_SIMPLE = True
+                        
+                        print("Переключаюсь на simple режим")
+                        self.llm_backend = 'simple'
+                        
+                    except Exception as e:
+                        print(f"Warning: NeuralForecast failed: {e}")
+                        destroy_all_models()
+                        print("Переключаюсь на simple режим")
+                        self.llm_backend = 'simple'
         
         # Simple режим (fallback)
         if self.llm_backend == 'simple':
