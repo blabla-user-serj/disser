@@ -406,7 +406,6 @@ async def forecast(
                 temp_model.fit(values_array[:train_size])
                 y_pred = temp_model.predict(len(y_true), return_conf_int=False)['forecast']
                 metrics = model.get_metrics(y_true, y_pred)
-                del temp_model
                 del temp_model  # Освобождаем память
         else:
             metrics = {'MAE': 0, 'RMSE': 0, 'R2': 0}
