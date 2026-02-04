@@ -10,19 +10,31 @@ from .timellm_gguf import TimeLLM
 class HybridModel:
     """Гибридная модель с адаптивным взвешиванием"""
     
-    def __init__(self, decay_factor=0.9, use_cv=True, n_splits=3):
+    def __init__(self, decay_factor=0.9, use_cv=True, n_splits=3, use_slm=True, slm_model='qwen2-0.5b'):
         """
         Args:
             decay_factor: коэффициент экспоненциального сглаживания для весов
             use_cv: использовать ли CV в базовых моделях
             n_splits: количество сплитов для CV
+            use_slm: использовать ли SLM модели (NeuralForecast)
+            slm_model: какую SLM модель использовать (qwen2-0.5b, llama3.2-1b, gemma-2b и т.д.)
         """
         self.sarima = SARIMAXS(use_cv=use_cv, n_splits=n_splits)
         self.xgboost = XGBoostTS(use_cv=use_cv, n_splits=n_splits)
-        # Используем NeuralForecast на GPU (требует CUDA)
-        # NeuralForecast не поддерживает CPU, только GPU
-        # Для RTX 4070 Ti Super (16GB) используем phi-2 - более мощную модель
-        self.timellm = TimeLLM(llm_backend="neuralforecast", neuralforecast_model='phi-2')
+        
+        # TimeLLM с выбором режима
+        if use_slm:
+            # Используем NeuralForecast с современными SLM 2024-2025
+            # По умолчанию: Qwen2-0.5B (500M) - самая лёгкая и быстрая
+            print(f"🤖 HybridModel: используется TimeLLM с NeuralForecast + SLM '{slm_model}'")
+            self.timellm = TimeLLM(
+                llm_backend="neuralforecast", 
+                neuralforecast_model=slm_model
+            )
+        else:
+            # Используем Simple режим (быстро, без GPU)
+            print("⚡ HybridModel: используется TimeLLM в Simple режиме (без GPU)")
+            self.timellm = TimeLLM(llm_backend="simple")
         
         self.decay_factor = decay_factor  # λ для экспоненциального сглаживания
         

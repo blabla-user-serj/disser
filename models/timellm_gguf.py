@@ -13,6 +13,15 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512,expandable_segmen
 os.environ["TORCH_CUDNN_V8_API_ENABLED"] = "1"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"  # Синхронный режим для отладки
 
+# Кэширование HuggingFace моделей
+# Модели будут скачиваться один раз и храниться локально
+HF_CACHE_DIR = os.path.join(os.path.dirname(__file__), '..', '.cache', 'huggingface')
+os.makedirs(HF_CACHE_DIR, exist_ok=True)
+os.environ["HF_HOME"] = HF_CACHE_DIR
+os.environ["TRANSFORMERS_CACHE"] = HF_CACHE_DIR
+os.environ["HF_DATASETS_CACHE"] = HF_CACHE_DIR
+print(f"📦 Кэш HuggingFace: {HF_CACHE_DIR}")
+
 import torch
 warnings.filterwarnings('ignore')
 
@@ -66,7 +75,7 @@ class TimeLLM:
     3. Fallback на простую статистическую модель
     """
     
-    def __init__(self, llm_backend='neuralforecast', llm_model='gpt2', llm_path=None, gguf_config=None, use_cpu=False, neuralforecast_model='qwen2-0.5b'):
+    def __init__(self, llm_backend='simple', llm_model='gpt2', llm_path=None, gguf_config=None, use_cpu=False, neuralforecast_model='qwen2-0.5b'):
         """
         Инициализация TimeLLM
         
@@ -422,27 +431,27 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             
             # Определяем оптимальные параметры на основе доступной памяти
             if gpu_memory >= 15.0:  # 16GB карта
-                optimal_batch_size = 4  # Уменьшено для стабильности
-                optimal_input_size = 64
-                optimal_horizon = 24
+                optimal_batch_size = 1  # Минимальный для экономии памяти
+                optimal_input_size = 32  # Уменьшено
+                optimal_horizon = 12  # Уменьшено
                 default_model = 'qwen2-0.5b'  # Современная SLM 2024
                 print("⚡ Режим: 16GB VRAM - используется лёгкая SLM Qwen2-0.5B")
             elif gpu_memory >= 12.0:  # 12-15GB карта
-                optimal_batch_size = 4
-                optimal_input_size = 48
-                optimal_horizon = 24
+                optimal_batch_size = 1
+                optimal_input_size = 32
+                optimal_horizon = 12
                 default_model = 'qwen2-0.5b'
                 print("⚡ Режим: 12GB+ VRAM - SLM Qwen2-0.5B")
             elif gpu_memory >= 8.0:  # 8-12GB карта
-                optimal_batch_size = 2
-                optimal_input_size = 32
-                optimal_horizon = 16
+                optimal_batch_size = 1
+                optimal_input_size = 24
+                optimal_horizon = 12
                 default_model = 'qwen2-0.5b'
                 print("⚡ Режим: 8GB+ VRAM - SLM Qwen2-0.5B")
             else:  # Меньше 8GB
-                optimal_batch_size = 2
-                optimal_input_size = 24
-                optimal_horizon = 12
+                optimal_batch_size = 1
+                optimal_input_size = 16
+                optimal_horizon = 8
                 default_model = 'qwen2-0.5b'
                 print("⚡ Режим: <8GB VRAM - SLM Qwen2-0.5B")
         else:

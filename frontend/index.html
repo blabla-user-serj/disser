@@ -43,7 +43,7 @@
                 </div>
                 
                 <div class="config-item" id="slmSelectContainer" style="display: none;">
-                    <label for="slmSelect">SLM модель (для TimeLLM):</label>
+                    <label for="slmSelect">SLM модель:</label>
                     <select id="slmSelect">
                         <option value="qwen2-0.5b">🟢 Qwen2-0.5B (500M) - Рекомендуется!</option>
                         <option value="llama3.2-1b">🟢 Llama-3.2-1B (1B) - Meta 2024</option>
@@ -53,7 +53,7 @@
                         <option value="gpt2">🟡 GPT-2 (124M) - Классика</option>
                         <option value="distilgpt2">🟡 DistilGPT-2 (82M) - Быстро</option>
                     </select>
-                    <small style="color: #7f8c8d; margin-top: 3px; display: block;">
+                    <small id="slmHelpText" style="color: #7f8c8d; margin-top: 3px; display: block;">
                         💡 Для RTX 4070 Ti Super рекомендуется Qwen2-0.5B или Llama-3.2-1B
                     </small>
                 </div>
@@ -117,14 +117,20 @@
         let uploadedData = null;
         let currentChart = null;
 
-        // Обработчик выбора модели - показываем предупреждение и выбор SLM для TimeLLM
+        // Обработчик выбора модели - показываем выбор SLM для TimeLLM и Hybrid
         document.getElementById('modelSelect').addEventListener('change', (e) => {
             const warning = document.getElementById('modelWarning');
             const slmContainer = document.getElementById('slmSelectContainer');
+            const slmHelpText = document.getElementById('slmHelpText');
             
             if (e.target.value === 'timellm') {
                 warning.style.display = 'block';
                 slmContainer.style.display = 'block';
+                slmHelpText.textContent = '💡 Для RTX 4070 Ti Super рекомендуется Qwen2-0.5B или Llama-3.2-1B';
+            } else if (e.target.value === 'hybrid') {
+                warning.style.display = 'none';
+                slmContainer.style.display = 'block';
+                slmHelpText.textContent = '🤖 SLM модель для TimeLLM внутри Hybrid (только с GPU)';
             } else {
                 warning.style.display = 'none';
                 slmContainer.style.display = 'none';
@@ -185,8 +191,8 @@
             formData.append('steps', steps);
             formData.append('web_urls', webUrls);
             
-            // Добавляем выбор SLM для TimeLLM
-            if (modelType === 'timellm') {
+            // Добавляем выбор SLM для TimeLLM и Hybrid
+            if (modelType === 'timellm' || modelType === 'hybrid') {
                 formData.append('llm_model', slmModel);
             }
 
