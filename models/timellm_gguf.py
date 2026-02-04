@@ -66,7 +66,7 @@ class TimeLLM:
     3. Fallback на простую статистическую модель
     """
     
-    def __init__(self, llm_backend='gguf', llm_model='gpt2', llm_path=None, gguf_config=None, use_cpu=False, neuralforecast_model='tinyllama'):
+    def __init__(self, llm_backend='gguf', llm_model='gpt2', llm_path=None, gguf_config=None, use_cpu=False, neuralforecast_model='gpt2'):
         """
         Инициализация TimeLLM
         
@@ -74,20 +74,14 @@ class TimeLLM:
             llm_backend: 'gguf' (локальная GGUF), 'neuralforecast' (NeuralForecast), 'simple' (fallback)
             llm_model: Название LLM модели для NeuralForecast (gpt2, llama и т.д.)
             llm_path: Путь к GGUF файлу (для llm_backend='gguf')
-            gguf_config: dict с конфигурацией GGUF:
-                {
-                    'n_ctx': 2048,        # Размер контекста
-                    'n_threads': 8,       # CPU threads
-                    'n_gpu_layers': 0,    # GPU layers (0 для CPU)
-                    'temperature': 0.7,   # Температура генерации
-                    'max_tokens': 512     # Максимум токенов
-                }
+            gguf_config: dict с конфигурацией GGUF
             use_cpu: [УСТАРЕЛО] NeuralForecast работает только на GPU. Параметр игнорируется.
             neuralforecast_model: Модель для NeuralForecast:
-                - 'phi-1.5' (по умолчанию): microsoft/phi-1.5 - современная модель 2023 года
-                - 'tinyllama': TinyLlama-1.1B - самая современная модель 2024 года
-                - 'gpt2': gpt2 - самая легкая модель
-                - 'phi-2': microsoft/phi-2 - более мощная модель (может не поместиться в 16GB)
+                - 'gpt2' (по умолчанию): OpenAI GPT-2 (124M) - РЕКОМЕНДУЕТСЯ для API
+                - 'distilgpt2': DistilGPT-2 (82M) - ещё легче
+                - 'tinyllama': TinyLlama (1.1B) - средняя модель
+                - 'phi-1.5': Phi-1.5 (1.3B) - тяжёлая, не рекомендуется
+                - 'phi-2': Phi-2 (2.7B) - очень тяжёлая, НЕ для API!
         """
         self.llm_backend = llm_backend
         self.llm_model = llm_model
@@ -398,25 +392,26 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 optimal_batch_size = 8
                 optimal_input_size = 128
                 optimal_horizon = 48
-                default_model = 'phi-1.5'
-                print("⚡ Режим: Максимальная производительность (16GB VRAM)")
+                # ИЗМЕНЕНО: используем gpt2 вместо phi-2 для стабильности
+                default_model = 'gpt2'  # Было: 'phi-1.5'
+                print("⚡ Режим: 16GB VRAM - используется лёгкая модель gpt2 для стабильности")
             elif gpu_memory >= 12.0:  # 12-15GB карта
                 optimal_batch_size = 6
                 optimal_input_size = 96
                 optimal_horizon = 36
-                default_model = 'phi-1.5'
+                default_model = 'gpt2'
                 print("⚡ Режим: Высокая производительность (12GB+ VRAM)")
             elif gpu_memory >= 8.0:  # 8-12GB карта
                 optimal_batch_size = 4
                 optimal_input_size = 64
                 optimal_horizon = 24
-                default_model = 'phi-1.5'
+                default_model = 'gpt2'
                 print("⚡ Режим: Оптимизированная производительность (8GB+ VRAM)")
             else:  # Меньше 8GB
                 optimal_batch_size = 2
                 optimal_input_size = 48
                 optimal_horizon = 24
-                default_model = 'phi-1.5'
+                default_model = 'gpt2'
                 print("⚡ Режим: Экономия памяти (<8GB VRAM)")
         else:
             optimal_batch_size = 2
@@ -442,36 +437,39 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             input_size = min(len(data) - horizon, optimal_input_size)
             
             # Выбор модели на основе параметра
-            # Для RTX 4070 Ti Super (16GB) можно использовать более мощные модели
-            # Доступные модели:
-            #   - 'phi-2': microsoft/phi-2 (2.7B, 2023) - РЕКОМЕНДУЕТСЯ для 16GB, d_llm=2048
-            #   - 'phi-1.5': microsoft/phi-1.5 (1.3B, 2023) - современная, d_llm=2048
-            #   - 'tinyllama': TinyLlama/TinyLlama-1.1B-Chat-v1.0 (1.1B, 2024) - самая современная, d_llm=2048
-            #   - 'gpt2': gpt2 (124M, 2019) - самая легкая, d_llm=768
+            # ВАЖНО: Для API используем только лёгкие модели!
+            # Тяжёлые модели (phi-2, phi-1.5, tinyllama) могут вызывать:
+            # - Out of memory даже на 16GB
+            # - Очень долгое обучение (>5 минут)
+            # - Сбои CUDA на Windows
             
-            # Для 16GB карты используем phi-2 по умолчанию (более мощная модель)
             model_choice = self.neuralforecast_model or default_model
             
             model_configs = {
-                'phi-1.5': {
-                    'name': 'microsoft/phi-1.5',
-                    'd_llm': 2048,
-                    'description': 'Современная модель 2023 года (1.3B параметров)'
+                'gpt2': {
+                    'name': 'gpt2',
+                    'd_llm': 768,
+                    'description': '🟢 GPT-2 (124M) - РЕКОМЕНДУЕТСЯ для API: быстро, стабильно, мало памяти'
+                },
+                'distilgpt2': {
+                    'name': 'distilgpt2',
+                    'd_llm': 768,
+                    'description': '🟢 DistilGPT-2 (82M) - ещё легче чем GPT-2, очень быстро'
                 },
                 'tinyllama': {
                     'name': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
                     'd_llm': 2048,
-                    'description': 'Самая современная модель 2024 года (1.1B параметров)'
+                    'description': '🟡 TinyLlama (1.1B) - средний размер, требует 4-6GB VRAM'
                 },
-                'gpt2': {
-                    'name': 'gpt2',
-                    'd_llm': 768,
-                    'description': 'Классическая модель 2019 года (124M параметров) - самая легкая'
+                'phi-1.5': {
+                    'name': 'microsoft/phi-1.5',
+                    'd_llm': 2048,
+                    'description': '🔴 Phi-1.5 (1.3B) - тяжёлая, требует 6-8GB VRAM, медленно'
                 },
                 'phi-2': {
                     'name': 'microsoft/phi-2',
-                    'd_llm': 2560,  # Правильный размер: phi-2 имеет hidden_size=2560, не 2048!
-                    'description': 'Мощная модель 2023 года (2.7B параметров) - ОПТИМАЛЬНА для RTX 4070 Ti Super'
+                    'd_llm': 2560,
+                    'description': '🔴 Phi-2 (2.7B) - ОЧЕНЬ тяжёлая, НЕ рекомендуется для API!'
                 }
             }
             
@@ -484,6 +482,14 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             d_llm_value = config['d_llm']
             
             print(f"🤖 Выбрана модель: {config['description']}")
+            
+            # Предупреждение для тяжёлых моделей
+            if model_choice in ['phi-2', 'phi-1.5', 'tinyllama']:
+                print(f"⚠️  ВНИМАНИЕ: Модель {model_choice} может:")
+                print(f"   - Требовать много времени на загрузку (1-5 минут)")
+                print(f"   - Вызывать Out of Memory на некоторых системах")
+                print(f"   - Обучаться очень долго (>5 минут даже с max_steps=20)")
+                print(f"   💡 Рекомендуется использовать 'gpt2' для API режима")
             
             print(f"📊 NeuralForecast: Модель={llm_model_name}, d_llm={d_llm_value}")
             print(f"📊 Параметры: batch_size={optimal_batch_size}, input_size={input_size}, horizon={horizon}")
