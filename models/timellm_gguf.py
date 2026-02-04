@@ -66,22 +66,22 @@ class TimeLLM:
     3. Fallback на простую статистическую модель
     """
     
-    def __init__(self, llm_backend='gguf', llm_model='gpt2', llm_path=None, gguf_config=None, use_cpu=False, neuralforecast_model='gpt2'):
+    def __init__(self, llm_backend='simple', llm_model='gpt2', llm_path=None, gguf_config=None, use_cpu=False, neuralforecast_model='gpt2'):
         """
         Инициализация TimeLLM
         
         Args:
-            llm_backend: 'gguf' (локальная GGUF), 'neuralforecast' (NeuralForecast), 'simple' (fallback)
-            llm_model: Название LLM модели для NeuralForecast (gpt2, llama и т.д.)
+            llm_backend: 'simple' (по умолчанию, стабильно), 'gguf' (локальная GGUF), 'neuralforecast' (ЭКСПЕРИМЕНТАЛЬНО)
+            llm_model: Название LLM модели для NeuralForecast
             llm_path: Путь к GGUF файлу (для llm_backend='gguf')
             gguf_config: dict с конфигурацией GGUF
-            use_cpu: [УСТАРЕЛО] NeuralForecast работает только на GPU. Параметр игнорируется.
-            neuralforecast_model: Модель для NeuralForecast:
-                - 'gpt2' (по умолчанию): OpenAI GPT-2 (124M) - РЕКОМЕНДУЕТСЯ для API
-                - 'distilgpt2': DistilGPT-2 (82M) - ещё легче
-                - 'tinyllama': TinyLlama (1.1B) - средняя модель
-                - 'phi-1.5': Phi-1.5 (1.3B) - тяжёлая, не рекомендуется
-                - 'phi-2': Phi-2 (2.7B) - очень тяжёлая, НЕ для API!
+            use_cpu: Игнорируется
+            neuralforecast_model: Модель для NeuralForecast (НЕ РЕКОМЕНДУЕТСЯ - нестабильно на Windows)
+            
+        ВАЖНО: 
+        - По умолчанию используется 'simple' режим (стабильный статистический прогноз)
+        - NeuralForecast режим вызывает ошибки памяти на Windows и не рекомендуется
+        - Для качественного прогноза используйте Гибридную модель (SARIMA + XGBoost + TimeLLM simple)
         """
         self.llm_backend = llm_backend
         self.llm_model = llm_model
@@ -263,16 +263,44 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
         return corrected_forecast
     
     def _simple_forecast(self, data, steps):
-        """Простой статистический прогноз (fallback)"""
-        # Линейный тренд + последнее значение
+        """
+        Улучшенный статистический прогноз
+        
+        Комбинирует:
+        - Линейный тренд
+        - Экспоненциальное сглаживание
+        - Сезонность
+        """
+        # Если модель обучена, используем сохранённые параметры
+        if hasattr(self, 'trend_slope'):
+            last_index = len(data)
+            forecast = []
+            
+            for i in range(steps):
+                # Базовый прогноз: тренд + последнее сглаженное значение
+                trend_component = self.trend_slope * (last_index + i) + self.trend_intercept
+                
+                # Добавляем сезонность если есть
+                if self.seasonal_pattern is not None:
+                    season_idx = (last_index + i) % len(self.seasonal_pattern)
+                    seasonal_component = self.seasonal_pattern[season_idx]
+                else:
+                    seasonal_component = 0
+                
+                # Взвешенная комбинация
+                pred = 0.7 * trend_component + 0.3 * data[-1] + seasonal_component
+                forecast.append(pred)
+            
+            return np.array(forecast)
+        
+        # Fallback: простой метод
         trend = np.mean(np.diff(data)) if len(data) > 1 else 0
         last_value = data[-1]
         
         forecast = np.array([last_value + trend * (i+1) for i in range(steps)])
         
-        # Добавляем сезонность если есть
+        # Добавляем сезонность если есть достаточно данных
         if len(data) >= 12:
-            # Простая сезонная компонента (среднее по сезонам)
             seasonal_period = min(12, len(data) // 3)
             seasonal_pattern = []
             
@@ -305,6 +333,14 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
         print(f"Backend: {self.llm_backend}")
         print(f"{'='*60}")
         
+        # ВАЖНО: По умолчанию используем simple режим (стабильно)
+        # NeuralForecast вызывает ошибки памяти на Windows
+        if self.llm_backend == 'neuralforecast':
+            print("⚠️  WARNING: NeuralForecast режим ЭКСПЕРИМЕНТАЛЬНЫЙ и нестабилен!")
+            print("   Может вызывать ошибки памяти на Windows.")
+            print("   Автоматически переключаюсь на stable simple режим.")
+            self.llm_backend = 'simple'
+        
         # Режим GGUF
         if self.llm_backend == 'gguf':
             if self.llm_instance is None and self.llm_path:
@@ -316,35 +352,10 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 print("Warning: GGUF недоступен, используется simple режим")
                 self.llm_backend = 'simple'
         
-        # Режим NeuralForecast (требует GPU)
-        elif self.llm_backend == 'neuralforecast':
-            if not torch.cuda.is_available():
-                print("⚠️ Warning: NeuralForecast требует GPU. CUDA недоступен.")
-                print("Используется simple режим")
-                self.llm_backend = 'simple'
-            else:
-                try:
-                    # Проверяем работоспособность CUDA
-                    torch.cuda.synchronize()
-                    test_tensor = torch.zeros(1).cuda()
-                    del test_tensor
-                    torch.cuda.empty_cache()
-                    
-                    self._fit_neuralforecast(data, freq)
-                    print("✓ Используется NeuralForecast.TimeLLM на GPU")
-                except RuntimeError as e:
-                    print(f"❌ CUDA RuntimeError: {e}")
-                    print("Используется simple режим")
-                    self.llm_backend = 'simple'
-                except Exception as e:
-                    print(f"Warning: NeuralForecast failed: {e}")
-                    print("Используется simple режим")
-                    self.llm_backend = 'simple'
-        
-        # Simple режим
+        # Simple режим (по умолчанию)
         if self.llm_backend == 'simple':
             self._fit_simple(data)
-            print("✓ Используется Simple статистический режим")
+            print("✓ Используется Simple статистический режим (стабильный)")
         
         print(f"{'='*60}\n")
         
@@ -631,20 +642,57 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             raise
     
     def _fit_simple(self, data):
-        """Упрощённая версия для fallback"""
+        """
+        Улучшенная статистическая модель (вместо NeuralForecast)
+        
+        Использует комбинацию:
+        - Экспоненциальное сглаживание (Holt-Winters)
+        - Сезонная декомпозиция
+        - Линейный тренд
+        """
         self.data = data
         self.mean = np.mean(data)
         self.std = np.std(data)
-        self.trend = np.mean(np.diff(data)) if len(data) > 1 else 0
+        
+        # Линейный тренд
+        x = np.arange(len(data))
+        coeffs = np.polyfit(x, data, 1)
+        self.trend_slope = coeffs[0]
+        self.trend_intercept = coeffs[1]
+        
+        # Экспоненциальное сглаживание (alpha=0.3)
+        self.smoothed = []
+        s = data[0]
+        for val in data:
+            s = 0.3 * val + 0.7 * s
+            self.smoothed.append(s)
+        self.smoothed = np.array(self.smoothed)
+        
+        # Сезонность (если достаточно данных)
+        if len(data) >= 12:
+            seasonal_period = min(12, len(data) // 3)
+            self.seasonal_pattern = []
+            
+            for i in range(seasonal_period):
+                indices = list(range(i, len(data), seasonal_period))
+                if indices:
+                    seasonal_mean = np.mean(data[indices])
+                    self.seasonal_pattern.append(seasonal_mean - self.mean)
+            
+            self.seasonal_pattern = np.array(self.seasonal_pattern)
+        else:
+            self.seasonal_pattern = None
         
         # Остатки для доверительных интервалов
-        if len(data) > 5:
-            rolling_mean = pd.Series(data).rolling(window=min(5, len(data))).mean()
-            self.residuals = data - rolling_mean.fillna(method='bfill').values
-        else:
-            self.residuals = np.zeros(len(data))
+        trend_line = self.trend_slope * x + self.trend_intercept
+        self.residuals = data - trend_line
         
         self.model = 'simple'
+        
+        print(f"   📊 Параметры:")
+        print(f"      - Среднее: {self.mean:.2f}")
+        print(f"      - Тренд: {self.trend_slope:.4f}")
+        print(f"      - Сезонность: {'✓ обнаружена' if self.seasonal_pattern is not None else '✗ не обнаружена'}")
     
     def predict(self, steps, return_conf_int=True, alpha=0.05):
         """

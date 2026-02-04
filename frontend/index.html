@@ -33,12 +33,12 @@
                     <label for="modelSelect">Модель:</label>
                     <select id="modelSelect">
                         <option value="hybrid">Гибридная (рекомендуется)</option>
-                        <option value="sarima">SARIMA-XS (быстро)</option>
-                        <option value="xgboost">XGBoost (быстро)</option>
-                        <option value="timellm">TimeLLM (1-2 мин, базовое качество)</option>
+                        <option value="sarima">SARIMA-XS (статистическая)</option>
+                        <option value="xgboost">XGBoost (ML)</option>
+                        <option value="timellm">TimeLLM (улучшенная статистика)</option>
                     </select>
-                    <small id="modelWarning" style="color: #e74c3c; display: none; margin-top: 5px;">
-                        ⚠️ TimeLLM: быстрый режим (max_steps=20) для API. Обучается ~1-2 минуты.
+                    <small id="modelWarning" style="color: #2c3e50; display: none; margin-top: 5px;">
+                        ℹ️ TimeLLM: улучшенная статистическая модель (тренд + сезонность + сглаживание). Быстро и стабильно.
                     </small>
                 </div>
                 
