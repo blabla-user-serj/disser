@@ -2,6 +2,9 @@
 
 **Time-LLM (GGUF) + SARIMA-XS + XGBoost + YandexGPT Expert**
 
+> ⚠️ **ВАЖНО:** Для работы с YandexGPT необходимо настроить API ключи в `config/.env`  
+> См. раздел [Конфигурация](#-конфигурация) для подробных инструкций
+
 ## 📋 Содержание
 
 - [Описание](#-описание)
@@ -683,6 +686,52 @@ pytest tests/ --cov=models --cov-report=html
 ---
 
 ## 🐛 Troubleshooting
+
+### ❌ Ошибка "failed to fetch" при обучении модели
+
+**Причина:** Проблемы с YandexGPT API или долгое обучение модели
+
+**Решение:**
+1. **Проверьте настройки YandexGPT:**
+   ```bash
+   # Скопируйте пример конфигурации
+   cp config/.env.example config/.env
+   
+   # Отредактируйте файл и укажите ваши ключи
+   nano config/.env
+   ```
+
+2. **Убедитесь что указаны правильные значения:**
+   - `YANDEX_API_KEY` - API ключ из консоли Yandex Cloud
+   - `YANDEX_FOLDER_ID` - ID каталога (folder ID)
+   - `YANDEX_MODEL` - yandexgpt-lite (рекомендуется)
+
+3. **Проверьте права доступа:**
+   - В Yandex Cloud назначьте роль `ai.languageModels.user` на сервисный аккаунт
+   - Убедитесь что API ключ не истёк
+
+4. **Если YandexGPT недоступен:**
+   - Система автоматически переключится на базовый анализ без LLM
+   - Прогноз будет работать, но без коррекции от YandexGPT
+
+### ❌ YandexGPT не работает
+
+```
+Warning: YandexGPT API key not found
+```
+
+**Решение:**
+Добавьте в `config/.env`:
+```
+YANDEX_API_KEY=your_key
+YANDEX_FOLDER_ID=your_folder_id
+```
+
+**Получение ключей:**
+1. Перейдите в [консоль Yandex Cloud](https://console.cloud.yandex.ru/)
+2. Создайте сервисный аккаунт с ролью `ai.languageModels.user`
+3. Создайте API-ключ в разделе "API-ключи"
+4. Скопируйте ID каталога из URL консоли
 
 ### GGUF модель не загружается
 

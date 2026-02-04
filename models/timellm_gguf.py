@@ -588,15 +588,35 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                     'y': self.data
                 })
                 
-                # Используем torch.no_grad() для инференса на GPU
+                # Используем обученный горизонт модели
+                # NeuralForecast.predict() не принимает параметр h - использует h из модели
+                print(f"📊 Выполняю прогноз на {self.h} шагов (обученный горизонт)...")
                 with torch.no_grad():
-                    forecast_df = self.model.predict(df=df, h=steps)
-                    forecast = forecast_df['TimeLLM'].values[:steps]
+                    forecast_df = self.model.predict(df=df)
+                    
+                    # Получаем прогноз из результата
+                    model_forecast = forecast_df['TimeLLM'].values
+                    
+                    # Если запрошено больше чем обучено, расширяем прогноз
+                    if steps > len(model_forecast):
+                        print(f"⚠️  Запрошено {steps} шагов, но модель обучена на {len(model_forecast)}")
+                        print(f"   Использую простую экстраполяцию для дополнительных шагов")
+                        # Используем последний тренд для экстраполяции
+                        trend = np.mean(np.diff(model_forecast[-5:])) if len(model_forecast) >= 5 else 0
+                        extra_steps = steps - len(model_forecast)
+                        extra_forecast = np.array([model_forecast[-1] + trend * (i+1) for i in range(extra_steps)])
+                        forecast = np.concatenate([model_forecast, extra_forecast])
+                    else:
+                        # Берём нужное количество шагов
+                        forecast = model_forecast[:steps]
                 
                 # ПОЛНАЯ очистка GPU памяти после предсказания
                 clear_gpu_memory_completely()
             except Exception as e:
-                print(f"Warning: NeuralForecast prediction failed: {e}")
+                print(f"❌ NeuralForecast prediction failed: {e}")
+                print(f"   Используется fallback на simple forecast")
+                import traceback
+                traceback.print_exc()
                 # ПОЛНАЯ очистка GPU памяти при ошибке
                 clear_gpu_memory_completely()
                 forecast = self._simple_forecast(self.data, steps)
