@@ -246,10 +246,24 @@ async def forecast(
         else:
             raise HTTPException(400, f"Неизвестная модель: {model_type}")
         
-        model.fit(values_array)
+        try:
+            model.fit(values_array)
+        except Exception as e:
+            print(f"\n❌ Ошибка при обучении модели {model_type}:")
+            print(f"   {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(500, f"Ошибка обучения модели {model_type}: {str(e)}")
         
         # Прогнозирование с доверительными интервалами
-        result = model.predict(steps, return_conf_int=True, alpha=0.05)
+        try:
+            result = model.predict(steps, return_conf_int=True, alpha=0.05)
+        except Exception as e:
+            print(f"\n❌ Ошибка при прогнозировании модели {model_type}:")
+            print(f"   {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(500, f"Ошибка прогнозирования модели {model_type}: {str(e)}")
         
         forecast_values = result['forecast']
         lower_bound = result.get('lower_bound', forecast_values * 0.95)
@@ -260,27 +274,37 @@ async def forecast(
         forecast_dates = generate_forecast_dates(last_date, steps, frequency)
         
         # LLM коррекция прогноза
-        llm_expert = LLMExpert()
-        
-        # Парсинг веб-ссылок
-        web_urls_list = []
-        if web_urls:
-            web_urls_list = [url.strip() for url in web_urls.split('\n') if url.strip()]
-        
-        # Коррекция прогноза
-        correction_result = llm_expert.correct_forecast(
-            historical_data=values_array,
-            forecast=forecast_values,
-            lower_bound=lower_bound,
-            upper_bound=upper_bound,
-            web_urls=web_urls_list
-        )
-        
-        corrected_forecast = correction_result['corrected_forecast']
-        corrected_lower = correction_result['corrected_lower']
-        corrected_upper = correction_result['corrected_upper']
-        llm_analysis = correction_result['analysis']
-        correction_applied = correction_result['correction_applied']
+        try:
+            llm_expert = LLMExpert()
+            
+            # Парсинг веб-ссылок
+            web_urls_list = []
+            if web_urls:
+                web_urls_list = [url.strip() for url in web_urls.split('\n') if url.strip()]
+            
+            # Коррекция прогноза
+            correction_result = llm_expert.correct_forecast(
+                historical_data=values_array,
+                forecast=forecast_values,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+                web_urls=web_urls_list
+            )
+            
+            corrected_forecast = correction_result['corrected_forecast']
+            corrected_lower = correction_result['corrected_lower']
+            corrected_upper = correction_result['corrected_upper']
+            llm_analysis = correction_result['analysis']
+            correction_applied = correction_result['correction_applied']
+        except Exception as e:
+            print(f"\n⚠️  Ошибка при LLM коррекции: {str(e)}")
+            print(f"   Используется прогноз без коррекции")
+            # Fallback: используем прогноз без коррекции
+            corrected_forecast = forecast_values
+            corrected_lower = lower_bound
+            corrected_upper = upper_bound
+            llm_analysis = f"⚠️ LLM коррекция недоступна: {str(e)}\n\nИспользуется базовый прогноз модели."
+            correction_applied = False
         
         # Сохранение для экспорта
         last_forecast_data = {
