@@ -66,22 +66,27 @@ class TimeLLM:
     3. Fallback на простую статистическую модель
     """
     
-    def __init__(self, llm_backend='simple', llm_model='gpt2', llm_path=None, gguf_config=None, use_cpu=False, neuralforecast_model='gpt2'):
+    def __init__(self, llm_backend='neuralforecast', llm_model='gpt2', llm_path=None, gguf_config=None, use_cpu=False, neuralforecast_model='qwen2-0.5b'):
         """
         Инициализация TimeLLM
         
         Args:
-            llm_backend: 'simple' (по умолчанию, стабильно), 'gguf' (локальная GGUF), 'neuralforecast' (ЭКСПЕРИМЕНТАЛЬНО)
-            llm_model: Название LLM модели для NeuralForecast
-            llm_path: Путь к GGUF файлу (для llm_backend='gguf')
+            llm_backend: 'neuralforecast' (по умолчанию, SLM модели), 'gguf' (локальная GGUF), 'simple' (fallback)
+            llm_model: Название LLM модели
+            llm_path: Путь к GGUF файлу
             gguf_config: dict с конфигурацией GGUF
             use_cpu: Игнорируется
-            neuralforecast_model: Модель для NeuralForecast (НЕ РЕКОМЕНДУЕТСЯ - нестабильно на Windows)
-            
-        ВАЖНО: 
-        - По умолчанию используется 'simple' режим (стабильный статистический прогноз)
-        - NeuralForecast режим вызывает ошибки памяти на Windows и не рекомендуется
-        - Для качественного прогноза используйте Гибридную модель (SARIMA + XGBoost + TimeLLM simple)
+            neuralforecast_model: Модель для NeuralForecast:
+                🟢 РЕКОМЕНДУЕМЫЕ SLM 2024-2025:
+                - 'qwen2-0.5b' (по умолчанию): Qwen2-0.5B (500M) - самая лёгкая, быстрая, современная
+                - 'llama3.2-1b': Llama-3.2-1B (1B) - от Meta, очень быстрая
+                - 'gemma-2b': Gemma-2B (2B) - от Google, баланс скорость/качество
+                - 'phi3-mini': Phi-3-mini (3.8B) - лучшая точность среди SLM
+                - 'stablelm-zephyr-3b': StableLM-Zephyr-3B (3B) - стабильная
+                
+                🟡 Классические (медленнее):
+                - 'gpt2': GPT-2 (124M) - старая, но лёгкая
+                - 'distilgpt2': DistilGPT-2 (82M) - ещё легче
         """
         self.llm_backend = llm_backend
         self.llm_model = llm_model
@@ -333,14 +338,6 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
         print(f"Backend: {self.llm_backend}")
         print(f"{'='*60}")
         
-        # ВАЖНО: По умолчанию используем simple режим (стабильно)
-        # NeuralForecast вызывает ошибки памяти на Windows
-        if self.llm_backend == 'neuralforecast':
-            print("⚠️  WARNING: NeuralForecast режим ЭКСПЕРИМЕНТАЛЬНЫЙ и нестабилен!")
-            print("   Может вызывать ошибки памяти на Windows.")
-            print("   Автоматически переключаюсь на stable simple режим.")
-            self.llm_backend = 'simple'
-        
         # Режим GGUF
         if self.llm_backend == 'gguf':
             if self.llm_instance is None and self.llm_path:
@@ -352,10 +349,36 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 print("Warning: GGUF недоступен, используется simple режим")
                 self.llm_backend = 'simple'
         
-        # Simple режим (по умолчанию)
+        # Режим NeuralForecast с современными SLM
+        elif self.llm_backend == 'neuralforecast':
+            if not torch.cuda.is_available():
+                print("⚠️ Warning: NeuralForecast требует GPU. CUDA недоступен.")
+                print("Используется simple режим")
+                self.llm_backend = 'simple'
+            else:
+                try:
+                    print(f"🚀 Используется NeuralForecast с современными SLM 2024-2025")
+                    # Проверяем работоспособность CUDA
+                    torch.cuda.synchronize()
+                    test_tensor = torch.zeros(1).cuda()
+                    del test_tensor
+                    torch.cuda.empty_cache()
+                    
+                    self._fit_neuralforecast(data, freq)
+                    print("✓ Используется NeuralForecast.TimeLLM с SLM")
+                except RuntimeError as e:
+                    print(f"❌ CUDA RuntimeError: {e}")
+                    print("Переключаюсь на simple режим")
+                    self.llm_backend = 'simple'
+                except Exception as e:
+                    print(f"Warning: NeuralForecast failed: {e}")
+                    print("Переключаюсь на simple режим")
+                    self.llm_backend = 'simple'
+        
+        # Simple режим (fallback)
         if self.llm_backend == 'simple':
             self._fit_simple(data)
-            print("✓ Используется Simple статистический режим (стабильный)")
+            print("✓ Используется Simple статистический режим (fallback)")
         
         print(f"{'='*60}\n")
         
@@ -398,32 +421,30 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             print(f"📊 Доступно: {free_memory:.2f} GB")
             
             # Определяем оптимальные параметры на основе доступной памяти
-            # Для RTX 4070 Ti Super (16GB) используем агрессивные параметры
             if gpu_memory >= 15.0:  # 16GB карта
-                optimal_batch_size = 8
-                optimal_input_size = 128
-                optimal_horizon = 48
-                # ИЗМЕНЕНО: используем gpt2 вместо phi-2 для стабильности
-                default_model = 'gpt2'  # Было: 'phi-1.5'
-                print("⚡ Режим: 16GB VRAM - используется лёгкая модель gpt2 для стабильности")
-            elif gpu_memory >= 12.0:  # 12-15GB карта
-                optimal_batch_size = 6
-                optimal_input_size = 96
-                optimal_horizon = 36
-                default_model = 'gpt2'
-                print("⚡ Режим: Высокая производительность (12GB+ VRAM)")
-            elif gpu_memory >= 8.0:  # 8-12GB карта
-                optimal_batch_size = 4
+                optimal_batch_size = 4  # Уменьшено для стабильности
                 optimal_input_size = 64
                 optimal_horizon = 24
-                default_model = 'gpt2'
-                print("⚡ Режим: Оптимизированная производительность (8GB+ VRAM)")
-            else:  # Меньше 8GB
-                optimal_batch_size = 2
+                default_model = 'qwen2-0.5b'  # Современная SLM 2024
+                print("⚡ Режим: 16GB VRAM - используется лёгкая SLM Qwen2-0.5B")
+            elif gpu_memory >= 12.0:  # 12-15GB карта
+                optimal_batch_size = 4
                 optimal_input_size = 48
                 optimal_horizon = 24
-                default_model = 'gpt2'
-                print("⚡ Режим: Экономия памяти (<8GB VRAM)")
+                default_model = 'qwen2-0.5b'
+                print("⚡ Режим: 12GB+ VRAM - SLM Qwen2-0.5B")
+            elif gpu_memory >= 8.0:  # 8-12GB карта
+                optimal_batch_size = 2
+                optimal_input_size = 32
+                optimal_horizon = 16
+                default_model = 'qwen2-0.5b'
+                print("⚡ Режим: 8GB+ VRAM - SLM Qwen2-0.5B")
+            else:  # Меньше 8GB
+                optimal_batch_size = 2
+                optimal_input_size = 24
+                optimal_horizon = 12
+                default_model = 'qwen2-0.5b'
+                print("⚡ Режим: <8GB VRAM - SLM Qwen2-0.5B")
         else:
             optimal_batch_size = 2
             optimal_input_size = 48
@@ -448,39 +469,61 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             input_size = min(len(data) - horizon, optimal_input_size)
             
             # Выбор модели на основе параметра
-            # ВАЖНО: Для API используем только лёгкие модели!
-            # Тяжёлые модели (phi-2, phi-1.5, tinyllama) могут вызывать:
-            # - Out of memory даже на 16GB
-            # - Очень долгое обучение (>5 минут)
-            # - Сбои CUDA на Windows
+            # Современные Small Language Models (SLM) 2024-2025
+            # Оптимизированы для быстрой работы и малого потребления памяти
             
             model_choice = self.neuralforecast_model or default_model
             
             model_configs = {
+                # 🟢 Современные SLM 2024-2025 (РЕКОМЕНДУЕТСЯ)
+                'qwen2-0.5b': {
+                    'name': 'Qwen/Qwen2-0.5B',
+                    'd_llm': 896,  # hidden_size для Qwen2-0.5B
+                    'description': '🟢 Qwen2-0.5B (500M) - Топ SLM 2024! Самая быстрая, 2GB VRAM'
+                },
+                'llama3.2-1b': {
+                    'name': 'meta-llama/Llama-3.2-1B',
+                    'd_llm': 2048,
+                    'description': '🟢 Llama-3.2-1B (1B) - Meta SLM 2024, быстрая, 3GB VRAM'
+                },
+                'gemma-2b': {
+                    'name': 'google/gemma-2b',
+                    'd_llm': 2048,
+                    'description': '🟢 Gemma-2B (2B) - Google SLM 2024, баланс скорость/качество, 4GB VRAM'
+                },
+                'phi3-mini': {
+                    'name': 'microsoft/Phi-3-mini-4k-instruct',
+                    'd_llm': 3072,
+                    'description': '🟡 Phi-3-mini (3.8B) - Лучшая точность SLM 2024, 6GB VRAM'
+                },
+                'stablelm-zephyr-3b': {
+                    'name': 'stabilityai/stablelm-zephyr-3b',
+                    'd_llm': 2560,
+                    'description': '🟡 StableLM-Zephyr-3B (3B) - Стабильная SLM, 5GB VRAM'
+                },
+                
+                # 🟡 Классические (для совместимости)
                 'gpt2': {
                     'name': 'gpt2',
                     'd_llm': 768,
-                    'description': '🟢 GPT-2 (124M) - РЕКОМЕНДУЕТСЯ для API: быстро, стабильно, мало памяти'
+                    'description': '🟡 GPT-2 (124M) - Классика 2019, очень быстро, 1GB VRAM'
                 },
                 'distilgpt2': {
                     'name': 'distilgpt2',
                     'd_llm': 768,
-                    'description': '🟢 DistilGPT-2 (82M) - ещё легче чем GPT-2, очень быстро'
+                    'description': '🟡 DistilGPT-2 (82M) - Ещё легче GPT-2, <1GB VRAM'
                 },
+                
+                # 🔴 Тяжёлые (не рекомендуется для API)
                 'tinyllama': {
                     'name': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
                     'd_llm': 2048,
-                    'description': '🟡 TinyLlama (1.1B) - средний размер, требует 4-6GB VRAM'
+                    'description': '🔴 TinyLlama (1.1B) - Старая 2023, медленнее новых SLM'
                 },
                 'phi-1.5': {
                     'name': 'microsoft/phi-1.5',
                     'd_llm': 2048,
-                    'description': '🔴 Phi-1.5 (1.3B) - тяжёлая, требует 6-8GB VRAM, медленно'
-                },
-                'phi-2': {
-                    'name': 'microsoft/phi-2',
-                    'd_llm': 2560,
-                    'description': '🔴 Phi-2 (2.7B) - ОЧЕНЬ тяжёлая, НЕ рекомендуется для API!'
+                    'description': '🔴 Phi-1.5 (1.3B) - Устарела, используйте Phi-3-mini'
                 }
             }
             
@@ -492,15 +535,15 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             llm_model_name = config['name']
             d_llm_value = config['d_llm']
             
-            print(f"🤖 Выбрана модель: {config['description']}")
+            print(f"🤖 Выбрана SLM: {config['description']}")
             
-            # Предупреждение для тяжёлых моделей
-            if model_choice in ['phi-2', 'phi-1.5', 'tinyllama']:
-                print(f"⚠️  ВНИМАНИЕ: Модель {model_choice} может:")
-                print(f"   - Требовать много времени на загрузку (1-5 минут)")
-                print(f"   - Вызывать Out of Memory на некоторых системах")
-                print(f"   - Обучаться очень долго (>5 минут даже с max_steps=20)")
-                print(f"   💡 Рекомендуется использовать 'gpt2' для API режима")
+            # Предупреждение для устаревших моделей
+            if model_choice in ['phi-1.5', 'tinyllama']:
+                print(f"⚠️  Модель {model_choice} устарела!")
+                print(f"   💡 Рекомендуется использовать современные SLM 2024:")
+                print(f"      - qwen2-0.5b (500M, самая быстрая)")
+                print(f"      - llama3.2-1b (1B, от Meta)")
+                print(f"      - phi3-mini (3.8B, лучшая точность)")
             
             print(f"📊 NeuralForecast: Модель={llm_model_name}, d_llm={d_llm_value}")
             print(f"📊 Параметры: batch_size={optimal_batch_size}, input_size={input_size}, horizon={horizon}")

@@ -35,10 +35,26 @@
                         <option value="hybrid">Гибридная (рекомендуется)</option>
                         <option value="sarima">SARIMA-XS (статистическая)</option>
                         <option value="xgboost">XGBoost (ML)</option>
-                        <option value="timellm">TimeLLM (улучшенная статистика)</option>
+                        <option value="timellm">TimeLLM (SLM 2024-2025)</option>
                     </select>
                     <small id="modelWarning" style="color: #2c3e50; display: none; margin-top: 5px;">
-                        ℹ️ TimeLLM: улучшенная статистическая модель (тренд + сезонность + сглаживание). Быстро и стабильно.
+                        ℹ️ TimeLLM с современными Small Language Models 2024-2025
+                    </small>
+                </div>
+                
+                <div class="config-item" id="slmSelectContainer" style="display: none;">
+                    <label for="slmSelect">SLM модель (для TimeLLM):</label>
+                    <select id="slmSelect">
+                        <option value="qwen2-0.5b">🟢 Qwen2-0.5B (500M) - Рекомендуется!</option>
+                        <option value="llama3.2-1b">🟢 Llama-3.2-1B (1B) - Meta 2024</option>
+                        <option value="gemma-2b">🟢 Gemma-2B (2B) - Google 2024</option>
+                        <option value="phi3-mini">🟡 Phi-3-mini (3.8B) - Max точность</option>
+                        <option value="stablelm-zephyr-3b">🟡 StableLM-3B (3B)</option>
+                        <option value="gpt2">🟡 GPT-2 (124M) - Классика</option>
+                        <option value="distilgpt2">🟡 DistilGPT-2 (82M) - Быстро</option>
+                    </select>
+                    <small style="color: #7f8c8d; margin-top: 3px; display: block;">
+                        💡 Для RTX 4070 Ti Super рекомендуется Qwen2-0.5B или Llama-3.2-1B
                     </small>
                 </div>
                 
@@ -156,6 +172,7 @@
             const modelType = document.getElementById('modelSelect').value;
             const steps = parseInt(document.getElementById('stepsInput').value);
             const webUrls = document.getElementById('webUrls').value;
+            const slmModel = document.getElementById('slmSelect').value;
 
             const formData = new FormData();
             formData.append('dates', JSON.stringify(uploadedData.data.dates));
@@ -163,6 +180,11 @@
             formData.append('model_type', modelType);
             formData.append('steps', steps);
             formData.append('web_urls', webUrls);
+            
+            // Добавляем выбор SLM для TimeLLM
+            if (modelType === 'timellm') {
+                formData.append('llm_model', slmModel);
+            }
 
             try {
                 document.getElementById('forecastBtn').textContent = '⏳ Прогнозирование...';

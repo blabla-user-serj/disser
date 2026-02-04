@@ -240,7 +240,12 @@ async def forecast(
         elif model_type == 'xgboost':
             model = XGBoostTS()
         elif model_type == 'timellm':
-            model = TimeLLM()
+            # Параметр llm_model можно передать для выбора конкретной SLM
+            llm_model = data.get('llm_model', 'qwen2-0.5b')  # По умолчанию Qwen2-0.5B
+            model = TimeLLM(
+                llm_backend='neuralforecast',  # Используем NeuralForecast с SLM
+                neuralforecast_model=llm_model
+            )
         elif model_type == 'hybrid':
             model = HybridModel()
         else:
@@ -496,8 +501,19 @@ async def models_info():
         },
         "timellm": {
             "name": "TimeLLM",
-            "description": "Трансформер с патчингом",
-            "features": ["Patch encoding", "Скрытые представления", "Доверительные интервалы"]
+            "description": "Трансформер с патчингом на базе современных SLM 2024-2025",
+            "features": ["Patch encoding", "Скрытые представления", "Доверительные интервалы"],
+            "available_slm": {
+                "qwen2-0.5b": "🟢 Qwen2-0.5B (500M) - Рекомендуется! Топ SLM 2024, самая быстрая, 2GB VRAM",
+                "llama3.2-1b": "🟢 Llama-3.2-1B (1B) - Meta SLM 2024, быстрая, 3GB VRAM",
+                "gemma-2b": "🟢 Gemma-2B (2B) - Google SLM 2024, баланс скорость/качество, 4GB VRAM",
+                "phi3-mini": "🟡 Phi-3-mini (3.8B) - Лучшая точность SLM 2024, 6GB VRAM",
+                "stablelm-zephyr-3b": "🟡 StableLM-Zephyr-3B (3B) - Стабильная SLM, 5GB VRAM",
+                "gpt2": "🟡 GPT-2 (124M) - Классика 2019, очень быстро, 1GB VRAM",
+                "distilgpt2": "🟡 DistilGPT-2 (82M) - Ещё легче GPT-2, <1GB VRAM"
+            },
+            "default_slm": "qwen2-0.5b",
+            "note": "Используйте параметр 'llm_model' в запросе для выбора конкретной SLM"
         },
         "hybrid": {
             "name": "Гибридная модель",
