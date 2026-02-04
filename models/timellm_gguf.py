@@ -6,15 +6,26 @@ import pandas as pd
 import warnings
 import os
 import gc
+import sys
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# Настройки CUDA для стабильной работы
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512,expandable_segments:True"
 os.environ["TORCH_CUDNN_V8_API_ENABLED"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"  # Синхронный режим для отладки
 
 import torch
 warnings.filterwarnings('ignore')
-torch.cuda.empty_cache()
-torch.set_float32_matmul_precision('high')
-torch.set_grad_enabled(False)
+
+# Безопасная инициализация CUDA
+try:
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.set_float32_matmul_precision('high')
+        torch.set_grad_enabled(False)
+        print(f"✅ CUDA инициализирован: {torch.cuda.get_device_name(0)}")
+except Exception as e:
+    print(f"⚠️  Ошибка инициализации CUDA: {e}")
+    print(f"   Будет использован CPU режим")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -23,26 +34,29 @@ def clear_gpu_memory_completely():
     if not torch.cuda.is_available():
         return
     
-    # Синхронизируем все операции CUDA
-    torch.cuda.synchronize()
-    
-    # Очищаем кэш
-    torch.cuda.empty_cache()
-    
-    # Сбрасываем статистику памяти
-    torch.cuda.reset_peak_memory_stats()
-    
-    # Принудительная сборка мусора
-    gc.collect()
-    
-    # Еще раз очищаем кэш после сборки мусора
-    torch.cuda.empty_cache()
-    
-    # Показываем состояние памяти
-    if torch.cuda.is_available():
+    try:
+        # Синхронизируем все операции CUDA
+        torch.cuda.synchronize()
+        
+        # Очищаем кэш
+        torch.cuda.empty_cache()
+        
+        # Сбрасываем статистику памяти
+        torch.cuda.reset_peak_memory_stats()
+        
+        # Принудительная сборка мусора Python
+        import gc
+        gc.collect()
+        
+        # Еще раз очищаем кэш после сборки мусора
+        torch.cuda.empty_cache()
+        
+        # Показываем состояние памяти
         allocated = torch.cuda.memory_allocated(0) / 1024**3
         reserved = torch.cuda.memory_reserved(0) / 1024**3
         print(f"🧹 GPU память после очистки: выделено={allocated:.2f} GB, зарезервировано={reserved:.2f} GB")
+    except Exception as e:
+        print(f"⚠️  Ошибка при очистке GPU памяти: {e}")
 
 class TimeLLM:
     """
@@ -316,8 +330,18 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 self.llm_backend = 'simple'
             else:
                 try:
+                    # Проверяем работоспособность CUDA
+                    torch.cuda.synchronize()
+                    test_tensor = torch.zeros(1).cuda()
+                    del test_tensor
+                    torch.cuda.empty_cache()
+                    
                     self._fit_neuralforecast(data, freq)
                     print("✓ Используется NeuralForecast.TimeLLM на GPU")
+                except RuntimeError as e:
+                    print(f"❌ CUDA RuntimeError: {e}")
+                    print("Используется simple режим")
+                    self.llm_backend = 'simple'
                 except Exception as e:
                     print(f"Warning: NeuralForecast failed: {e}")
                     print("Используется simple режим")
@@ -510,12 +534,37 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             
             nf = NeuralForecast(models=[timellm_model], freq=freq)
             
-            # Обучение модели
+            # Обучение модели с защитой от сбоев
             print("🚀 Начинаю обучение модели...")
             print(f"⏱️  Ожидаемое время: ~2-5 минут (зависит от размера данных)")
             print(f"📊 Параметры: {len(data)} точек, horizon={horizon}, input_size={input_size}")
             
-            nf.fit(df=df)
+            try:
+                # Синхронизация CUDA перед обучением
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                
+                nf.fit(df=df)
+                
+                # Синхронизация после обучения
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    
+            except RuntimeError as e:
+                error_msg = str(e)
+                print(f"\n❌ RuntimeError при обучении: {error_msg}")
+                
+                # Очистка памяти при ошибке
+                clear_gpu_memory_completely()
+                
+                if "out of memory" in error_msg.lower():
+                    raise RuntimeError(f"CUDA out of memory. Попробуйте уменьшить batch_size или использовать CPU режим")
+                else:
+                    raise
+            except Exception as e:
+                print(f"\n❌ Неожиданная ошибка при обучении: {e}")
+                clear_gpu_memory_completely()
+                raise
             
             # ПОЛНАЯ очистка памяти после обучения
             print("🧹 Очищаю GPU память после обучения...")
