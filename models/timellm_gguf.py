@@ -471,21 +471,41 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             # 
             # ВАЖНО: Ограничиваем время обучения для быстрого отклика API
             # Для production используйте max_steps=500-1000
-            timellm_model = NF_TimeLLM(
-                h=horizon,
-                input_size=input_size,
-                llm=llm_model_name,
-                d_llm=d_llm_value,
-                prompt_prefix=prompt,
-                learning_rate=1e-3,  # Увеличен для более быстрого обучения
-                batch_size=optimal_batch_size,  # Адаптивный batch_size на основе VRAM (8 для 16GB)
-                max_steps=100,  # КРИТИЧНО: ограничиваем количество шагов (по умолчанию 1000!)
-                val_check_steps=20,  # Валидация каждые 20 шагов
-                early_stop_patience_steps=3,  # Ранняя остановка если нет улучшения
-                random_seed=42
-            )
             
-            print(f"⚙️  Параметры обучения: max_steps=100 (быстрый режим для API)")
+            # Определяем нужен ли early stopping на основе размера данных
+            use_early_stop = len(data) > 30  # Для маленьких выборок отключаем
+            
+            if use_early_stop:
+                # С early stopping (для больших данных)
+                timellm_model = NF_TimeLLM(
+                    h=horizon,
+                    input_size=input_size,
+                    llm=llm_model_name,
+                    d_llm=d_llm_value,
+                    prompt_prefix=prompt,
+                    learning_rate=1e-3,
+                    batch_size=optimal_batch_size,
+                    max_steps=100,
+                    val_check_steps=20,
+                    early_stop_patience_steps=3,
+                    random_seed=42
+                )
+                print(f"⚙️  Параметры обучения: max_steps=100, early_stop=enabled")
+            else:
+                # Без early stopping (для маленьких данных)
+                timellm_model = NF_TimeLLM(
+                    h=horizon,
+                    input_size=input_size,
+                    llm=llm_model_name,
+                    d_llm=d_llm_value,
+                    prompt_prefix=prompt,
+                    learning_rate=1e-3,
+                    batch_size=optimal_batch_size,
+                    max_steps=100,
+                    random_seed=42
+                )
+                print(f"⚙️  Параметры обучения: max_steps=100 (без early_stop для малой выборки)")
+            
             print(f"   Для более качественного прогноза увеличьте max_steps до 500-1000")
             
             nf = NeuralForecast(models=[timellm_model], freq=freq)
