@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hybrid Forecast - Прогнозирование Временных Рядов</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔮 Hybrid Forecast</h1>
+            <p>Гибридное прогнозирование временных рядов с LLM-экспертом</p>
+        </header>
+
+        <!-- Секция загрузки файла -->
+        <section class="upload-section">
+            <h2>📁 Загрузка Данных</h2>
+            <div class="upload-area">
+                <input type="file" id="fileInput" accept=".csv,.xlsx" />
+                <button id="uploadBtn" class="btn btn-primary">Загрузить Файл</button>
+            </div>
+            <div id="uploadStatus" class="status-message"></div>
+        </section>
+
+        <!-- Секция конфигурации прогноза -->
+        <section class="config-section" id="configSection" style="display: none;">
+            <h2>⚙️ Настройки Прогноза</h2>
+            
+            <div class="config-grid">
+                <div class="config-item">
+                    <label for="modelSelect">Модель:</label>
+                    <select id="modelSelect">
+                        <option value="hybrid">Гибридная (рекомендуется)</option>
+                        <option value="sarima">SARIMA-XS</option>
+                        <option value="xgboost">XGBoost</option>
+                        <option value="timellm">TimeLLM</option>
+                    </select>
+                </div>
+                
+                <div class="config-item">
+                    <label for="stepsInput">Шагов вперёд:</label>
+                    <input type="number" id="stepsInput" value="10" min="1" max="100" />
+                </div>
+            </div>
+
+            <!-- LLM Expert секция -->
+            <div class="llm-section">
+                <h3>🤖 LLM-Эксперт (опционально)</h3>
+                <p class="help-text">Предоставьте веб-ссылки для анализа внешних факторов. LLM-эксперт извлечёт информацию и скорректирует прогноз.</p>
+                
+                <label for="webUrls">Веб-ссылки (по одной на строку):</label>
+                <textarea id="webUrls" placeholder="https://example.com/news1&#10;https://example.com/news2&#10;https://example.com/analytics"></textarea>
+                
+                <p class="info-text">ℹ️ Если ссылки не предоставлены, эксперт использует только исторические данные. Для полной функциональности требуется настройка YandexGPT API (.env файл).</p>
+            </div>
+
+            <button id="forecastBtn" class="btn btn-success">🔮 Выполнить Прогноз</button>
+        </section>
+
+        <!-- Секция результатов -->
+        <section class="results-section" id="resultsSection" style="display: none;">
+            <h2>📊 Результаты Прогнозирования</h2>
+            
+            <!-- График -->
+            <div class="chart-container">
+                <canvas id="forecastChart"></canvas>
+            </div>
+
+            <!-- Кнопки экспорта -->
+            <div class="export-buttons">
+                <button id="exportCsvBtn" class="btn btn-export">💾 Скачать CSV</button>
+                <button id="exportXlsxBtn" class="btn btn-export">💾 Скачать XLSX</button>
+            </div>
+
+            <!-- Метрики -->
+            <div class="metrics-grid" id="metricsGrid"></div>
+
+            <!-- LLM Анализ -->
+            <div class="llm-analysis" id="llmAnalysis" style="display: none;">
+                <h3>🤖 Анализ LLM-Эксперта</h3>
+                <div id="llmAnalysisContent"></div>
+            </div>
+
+            <!-- Информация о модели -->
+            <div class="model-info" id="modelInfo"></div>
+        </section>
+
+        <!-- Футер -->
+        <footer>
+            <p>Hybrid Forecast API v2.0 | SARIMA-XS + XGBoost + TimeLLM + YandexGPT</p>
+        </footer>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000';
+        let uploadedData = null;
+        let currentChart = null;
+
+        // Загрузка файла
+        document.getElementById('uploadBtn').addEventListener('click', async () => {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                alert('Пожалуйста, выберите файл');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                document.getElementById('uploadStatus').innerHTML = '⏳ Загрузка...';
+                
+                const response = await fetch(`${API_URL}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    uploadedData = result;
+                    document.getElementById('uploadStatus').innerHTML = `✅ Загружено ${result.rows} записей. Частота: ${result.frequency}`;
+                    document.getElementById('configSection').style.display = 'block';
+                } else {
+                    throw new Error('Ошибка загрузки');
+                }
+            } catch (error) {
+                document.getElementById('uploadStatus').innerHTML = `❌ Ошибка: ${error.message}`;
+            }
+        });
+
+        // Прогнозирование
+        document.getElementById('forecastBtn').addEventListener('click', async () => {
+            if (!uploadedData) {
+                alert('Сначала загрузите данные');
+                return;
+            }
+
+            const modelType = document.getElementById('modelSelect').value;
+            const steps = parseInt(document.getElementById('stepsInput').value);
+            const webUrls = document.getElementById('webUrls').value;
+
+            const formData = new FormData();
+            formData.append('dates', JSON.stringify(uploadedData.data.dates));
+            formData.append('values', JSON.stringify(uploadedData.data.values));
+            formData.append('model_type', modelType);
+            formData.append('steps', steps);
+            formData.append('web_urls', webUrls);
+
+            try {
+                document.getElementById('forecastBtn').textContent = '⏳ Прогнозирование...';
+                document.getElementById('forecastBtn').disabled = true;
+
+                const response = await fetch(`${API_URL}/forecast`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    displayResults(result);
+                    document.getElementById('resultsSection').style.display = 'block';
+                } else {
+                    throw new Error('Ошибка прогнозирования');
+                }
+            } catch (error) {
+                alert(`Ошибка: ${error.message}`);
+            } finally {
+                document.getElementById('forecastBtn').textContent = '🔮 Выполнить Прогноз';
+                document.getElementById('forecastBtn').disabled = false;
+            }
+        });
+
+        // Отображение результатов
+        function displayResults(result) {
+            // Уничтожение предыдущего графика
+            if (currentChart) {
+                currentChart.destroy();
+                currentChart = null;
+            }
+
+            // Построение графика с доверительными интервалами
+            const ctx = document.getElementById('forecastChart').getContext('2d');
+            
+            const allDates = [...result.historical.dates, ...result.forecast.dates];
+            const historicalValues = result.historical.values;
+            const forecastValues = new Array(historicalValues.length).fill(null).concat(result.forecast.values);
+            const lowerBound = new Array(historicalValues.length).fill(null).concat(result.forecast.lower_bound);
+            const upperBound = new Array(historicalValues.length).fill(null).concat(result.forecast.upper_bound);
+
+            currentChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: allDates,
+                    datasets: [
+                        {
+                            label: 'Исторические данные',
+                            data: historicalValues.concat(new Array(result.forecast.values.length).fill(null)),
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            borderWidth: 2,
+                            pointRadius: 3,
+                            tension: 0.1
+                        },
+                        {
+                            label: 'Прогноз',
+                            data: forecastValues,
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            borderWidth: 2,
+                            borderDash: [5, 5],
+                            pointRadius: 3,
+                            tension: 0.1
+                        },
+                        {
+                            label: 'Верхняя граница (95%)',
+                            data: upperBound,
+                            borderColor: 'rgba(255, 99, 132, 0.3)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            borderWidth: 1,
+                            borderDash: [2, 2],
+                            pointRadius: 0,
+                            fill: '+1',
+                            tension: 0.1
+                        },
+                        {
+                            label: 'Нижняя граница (95%)',
+                            data: lowerBound,
+                            borderColor: 'rgba(255, 99, 132, 0.3)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            borderWidth: 1,
+                            borderDash: [2, 2],
+                            pointRadius: 0,
+                            fill: false,
+                            tension: 0.1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: `Прогноз временного ряда (${result.frequency})`
+                        },
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: 'Дата'
+                            },
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 45
+                            }
+                        },
+                        y: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: 'Значение'
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Метрики
+            const metricsHtml = `
+                <div class="metric-card">
+                    <h4>MAE</h4>
+                    <p>${result.metrics.MAE.toFixed(2)}</p>
+                </div>
+                <div class="metric-card">
+                    <h4>RMSE</h4>
+                    <p>${result.metrics.RMSE.toFixed(2)}</p>
+                </div>
+                <div class="metric-card">
+                    <h4>R²</h4>
+                    <p>${result.metrics.R2.toFixed(3)}</p>
+                </div>
+            `;
+            document.getElementById('metricsGrid').innerHTML = metricsHtml;
+
+            // LLM Анализ
+            if (result.llm_analysis) {
+                const correctionBadge = result.correction_applied 
+                    ? '<span class="badge badge-success">✅ Коррекция применена</span>'
+                    : '<span class="badge badge-warning">⚠️ Базовый анализ</span>';
+                
+                document.getElementById('llmAnalysisContent').innerHTML = 
+                    correctionBadge + '<pre>' + result.llm_analysis + '</pre>';
+                document.getElementById('llmAnalysis').style.display = 'block';
+            }
+
+            // Информация о модели
+            let modelInfoHtml = '<h3>📋 Информация о Модели</h3>';
+            
+            if (result.weights && Object.keys(result.weights).length > 0) {
+                modelInfoHtml += '<h4>Веса моделей:</h4><ul>';
+                for (const [model, weight] of Object.entries(result.weights)) {
+                    modelInfoHtml += `<li>${model}: ${(weight * 100).toFixed(1)}%</li>`;
+                }
+                modelInfoHtml += '</ul>';
+            }
+            
+            document.getElementById('modelInfo').innerHTML = modelInfoHtml;
+        }
+
+        // Экспорт CSV
+        document.getElementById('exportCsvBtn').addEventListener('click', async () => {
+            try {
+                const response = await fetch(`${API_URL}/export?format=csv`);
+                const blob = await response.blob();
+                
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `forecast_${new Date().toISOString().slice(0,10)}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            } catch (error) {
+                alert(`Ошибка экспорта: ${error.message}`);
+            }
+        });
+
+        // Экспорт XLSX
+        document.getElementById('exportXlsxBtn').addEventListener('click', async () => {
+            try {
+                const response = await fetch(`${API_URL}/export?format=xlsx`);
+                const blob = await response.blob();
+                
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `forecast_${new Date().toISOString().slice(0,10)}.xlsx`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            } catch (error) {
+                alert(`Ошибка экспорта: ${error.message}`);
+            }
+        });
+    </script>
+</body>
+</html>
