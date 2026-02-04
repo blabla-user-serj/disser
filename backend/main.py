@@ -243,8 +243,21 @@ async def forecast(
         elif model_type == 'timellm':
             # Параметр llm_model можно передать для выбора конкретной SLM
             print(f"🤖 TimeLLM: выбрана SLM модель '{llm_model}'")
+            
+            # По умолчанию используем simple режим (быстро, без GPU)
+            # Для NeuralForecast нужно явно указать llm_backend='neuralforecast'
+            backend = 'simple'  # Безопасный режим по умолчанию
+            
+            # Если пользователь явно выбрал NeuralForecast модель - используем neuralforecast
+            if llm_model in ['qwen2-0.5b', 'llama3.2-1b', 'gemma-2b', 'phi3-mini', 'stablelm-zephyr-3b']:
+                if torch.cuda.is_available():
+                    backend = 'neuralforecast'
+                    print(f"✅ Используется NeuralForecast с {llm_model}")
+                else:
+                    print(f"⚠️  GPU недоступен, используется simple режим вместо NeuralForecast")
+            
             model = TimeLLM(
-                llm_backend='neuralforecast',  # Используем NeuralForecast с SLM
+                llm_backend=backend,
                 neuralforecast_model=llm_model
             )
         elif model_type == 'hybrid':
