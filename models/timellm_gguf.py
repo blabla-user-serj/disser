@@ -499,6 +499,10 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             # Определяем нужен ли early stopping на основе размера данных
             use_early_stop = len(data) > 30  # Для маленьких выборок отключаем
             
+            # КРИТИЧНО: Минимальное количество шагов для API (быстрый отклик)
+            # Для production качества используйте max_steps=500-1000 в отдельном скрипте
+            api_max_steps = 20  # Было 100 - слишком долго для API!
+            
             if use_early_stop:
                 # С early stopping (для больших данных)
                 timellm_model = NF_TimeLLM(
@@ -507,14 +511,14 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                     llm=llm_model_name,
                     d_llm=d_llm_value,
                     prompt_prefix=prompt,
-                    learning_rate=1e-3,
+                    learning_rate=5e-3,  # Увеличен для очень быстрого обучения
                     batch_size=optimal_batch_size,
-                    max_steps=100,
-                    val_check_steps=20,
-                    early_stop_patience_steps=3,
+                    max_steps=api_max_steps,
+                    val_check_steps=10,
+                    early_stop_patience_steps=2,
                     random_seed=42
                 )
-                print(f"⚙️  Параметры обучения: max_steps=100, early_stop=enabled")
+                print(f"⚙️  Параметры обучения: max_steps={api_max_steps}, early_stop=enabled")
             else:
                 # Без early stopping (для маленьких данных)
                 timellm_model = NF_TimeLLM(
@@ -523,21 +527,24 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                     llm=llm_model_name,
                     d_llm=d_llm_value,
                     prompt_prefix=prompt,
-                    learning_rate=1e-3,
+                    learning_rate=5e-3,  # Увеличен для очень быстрого обучения
                     batch_size=optimal_batch_size,
-                    max_steps=100,
+                    max_steps=api_max_steps,
                     random_seed=42
                 )
-                print(f"⚙️  Параметры обучения: max_steps=100 (без early_stop для малой выборки)")
+                print(f"⚙️  Параметры обучения: max_steps={api_max_steps} (быстрый режим для API)")
             
-            print(f"   Для более качественного прогноза увеличьте max_steps до 500-1000")
+            print(f"   ⚠️  ВАЖНО: Для качественного прогноза обучайте модель отдельно с max_steps=500-1000")
+            print(f"   Текущий режим оптимизирован для быстрого отклика API (<2 мин)")
             
             nf = NeuralForecast(models=[timellm_model], freq=freq)
             
             # Обучение модели с защитой от сбоев
             print("🚀 Начинаю обучение модели...")
-            print(f"⏱️  Ожидаемое время: ~2-5 минут (зависит от размера данных)")
+            print(f"⏱️  Ожидаемое время: ~30-90 секунд (max_steps={api_max_steps})")
             print(f"📊 Параметры: {len(data)} точек, horizon={horizon}, input_size={input_size}")
+            print(f"💡 Для качественного прогноза требуется max_steps=500+, но это займёт 5-10 минут")
+            print(f"   Текущий режим: быстрый API отклик с базовым качеством")
             
             try:
                 # Синхронизация CUDA перед обучением
