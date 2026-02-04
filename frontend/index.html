@@ -117,13 +117,17 @@
         let uploadedData = null;
         let currentChart = null;
 
-        // Обработчик выбора модели - показываем предупреждение для TimeLLM
+        // Обработчик выбора модели - показываем предупреждение и выбор SLM для TimeLLM
         document.getElementById('modelSelect').addEventListener('change', (e) => {
             const warning = document.getElementById('modelWarning');
+            const slmContainer = document.getElementById('slmSelectContainer');
+            
             if (e.target.value === 'timellm') {
                 warning.style.display = 'block';
+                slmContainer.style.display = 'block';
             } else {
                 warning.style.display = 'none';
+                slmContainer.style.display = 'none';
             }
         });
 

@@ -204,7 +204,8 @@ async def forecast(
     values: str = Form(...),
     model_type: str = Form(...),
     steps: int = Form(...),
-    web_urls: str = Form(None)
+    web_urls: str = Form(None),
+    llm_model: str = Form('qwen2-0.5b')  # Параметр для выбора SLM
 ):
     """Прогнозирование временных рядов"""
     global last_forecast_data
@@ -241,7 +242,7 @@ async def forecast(
             model = XGBoostTS()
         elif model_type == 'timellm':
             # Параметр llm_model можно передать для выбора конкретной SLM
-            llm_model = data.get('llm_model', 'qwen2-0.5b')  # По умолчанию Qwen2-0.5B
+            print(f"🤖 TimeLLM: выбрана SLM модель '{llm_model}'")
             model = TimeLLM(
                 llm_backend='neuralforecast',  # Используем NeuralForecast с SLM
                 neuralforecast_model=llm_model
