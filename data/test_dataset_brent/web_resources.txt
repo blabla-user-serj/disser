@@ -1,0 +1,15 @@
+# Веб-ресурсы для LLM-коррекции прогноза цены нефти Brent
+# Используйте эти ссылки при вызове /forecast с параметром web_urls
+# Данные актуальны до октября 2024
+
+# 1. SberCIB - Прогноз цен на нефть до конца 2024 года (18.10.2024)
+# Аналитика: Brent в Q4 около $79/барр.
+https://sbercib.ru/publication/prognoz-tsen-na-neft-do-kontsa-2024-goda
+
+# 2. Всемирный банк - Прогноз товарных рынков (29.10.2024)
+# Анализ влияния ОПЕК+ и геополитических факторов
+https://www.vsemirnyjbank.org/ru/news/press-release/2024/10/29/commodity-markets-outlook-october-2024-press-release
+
+# 3. Forbes - Анализ рынка нефти и влияния ОПЕК (10.01.2024)
+# EIA прогноз: средняя цена Brent около $82/барр.
+https://www.forbes.ru/biznes/504004-pocemu-neft-ne-dorozaet-nesmotra-na-usilia-opek-i-naprazennost-na-bliznem-vostoke
