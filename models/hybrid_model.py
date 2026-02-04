@@ -1,25 +1,52 @@
 """
-Гибридная модель с адаптивным взвешиванием и доверительными интервалами
+Гибридная модель прогнозирования экстремально коротких временных рядов
+
+Реализует математическую модель из Главы 2 диссертации:
+- Формула 2.5, 2.11: Динамические веса EWA с β=1.2
+- Формула 2.6: Корректирующий коэффициент α(n) = 1 + ln(20/n)
+- Формула 2.7: Взвешенная ошибка ER_i(t) с λ=0.8
+- Формула 2.8, 2.9: Коррекция смещения малой выборки Δ_bias(n,h)
+- Формула 2.10: Ансамблевый прогноз
+- Формула 2.13, 2.14: Робастная обработка выбросов через MAD
+- Формула 2.17: Адаптивный вес LLM w_LLM(n)
+- Формула 2.18: Финальная формула прогноза
 """
 import numpy as np
 import gc
 import torch
+from scipy import stats
 from .sarima_xs import SARIMAXS
 from .xgboost_model import XGBoostTS
 from .timellm_gguf import TimeLLM, clear_gpu_memory_completely
 
 
 class HybridModel:
-    """Гибридная модель с адаптивным взвешиванием"""
+    """
+    Гибридная модель с адаптивным взвешиванием для экстремально коротких рядов (n=5-20)
     
-    def __init__(self, decay_factor=0.9, use_cv=True, n_splits=3, use_slm=True, slm_model='qwen2-0.5b'):
+    Научная новизна:
+    1. Адаптивные веса EWA с коррекцией на малую выборку
+    2. Коррекция смещения Δ_bias(n,h)
+    3. Робастная обработка выбросов через MAD
+    4. Адаптивный вес LLM-эксперта w_LLM(n)
+    """
+    
+    # ==================== КОНСТАНТЫ ИЗ ДИССЕРТАЦИИ ====================
+    BETA = 1.2          # Формула 2.5: коэффициент чувствительности
+    LAMBDA = 0.8        # Формула 2.7: коэффициент затухания для коротких рядов
+    GAMMA_BIAS = 0.15   # Формула 2.9: коэффициент компенсации смещения
+    T_NORMAL = 100      # Формула 2.9: теоретическая длина нормального ряда
+    MAD_THRESHOLD = 2.5 # Формула 2.13: порог для обнаружения выбросов
+    MAD_SCALE = 0.6745  # Формула 2.14: масштаб MAD для нормального распределения
+    
+    def __init__(self, decay_factor=None, use_cv=True, n_splits=3, use_slm=True, slm_model='qwen2-0.5b'):
         """
         Args:
-            decay_factor: коэффициент экспоненциального сглаживания для весов
+            decay_factor: коэффициент экспоненциального сглаживания (по умолчанию λ=0.8 из Формулы 2.7)
             use_cv: использовать ли CV в базовых моделях
             n_splits: количество сплитов для CV
             use_slm: использовать ли SLM модели (NeuralForecast)
-            slm_model: какую SLM модель использовать (qwen2-0.5b, llama3.2-1b, gemma-2b и т.д.)
+            slm_model: какую SLM модель использовать
         """
         # Сохраняем параметры для отложенной инициализации TimeLLM
         self.use_cv = use_cv
@@ -30,10 +57,11 @@ class HybridModel:
         self.sarima = SARIMAXS(use_cv=use_cv, n_splits=n_splits)
         self.xgboost = XGBoostTS(use_cv=use_cv, n_splits=n_splits)
         
-        # TimeLLM создаётся позже при обучении, чтобы контролировать память GPU
+        # TimeLLM создаётся позже при обучении
         self.timellm = None
         
-        self.decay_factor = decay_factor  # λ для экспоненциального сглаживания
+        # Формула 2.7: λ = 0.8 для коротких рядов
+        self.decay_factor = decay_factor if decay_factor is not None else self.LAMBDA
         
         self.weights = {
             'sarima': 1/3,
@@ -48,10 +76,190 @@ class HybridModel:
         }
         
         self.data = None
+        self.data_robust = None  # Данные после робастной обработки
+        self.std_estimate = None  # Оценка σ для Δ_bias
+    
+    # ==================== РОБАСТНАЯ ОБРАБОТКА ВЫБРОСОВ ====================
+    # Формулы 2.13, 2.14
+    
+    def _robust_preprocess(self, data):
+        """
+        Робастная обработка выбросов на основе MAD (Формулы 2.13, 2.14)
+        
+        X_robust(t) = X(t) если |X(t) - μ̂| ≤ 2.5σ̂, иначе обрезка
+        μ̂ = median(X)
+        σ̂ = MAD / 0.6745
+        MAD = median(|X - μ̂|)
+        """
+        # Формула 2.14: Робастные оценки
+        mu_robust = np.median(data)
+        mad = np.median(np.abs(data - mu_robust))
+        sigma_robust = mad / self.MAD_SCALE if mad > 0 else np.std(data)
+        
+        # Сохраняем для Δ_bias
+        self.std_estimate = sigma_robust
+        
+        # Формула 2.13: Обработка выбросов
+        threshold = self.MAD_THRESHOLD * sigma_robust
+        
+        data_robust = np.copy(data)
+        outlier_count = 0
+        
+        for i in range(len(data)):
+            deviation = np.abs(data[i] - mu_robust)
+            if deviation > threshold:
+                # Winsorization: ограничиваем значение
+                sign = np.sign(data[i] - mu_robust)
+                data_robust[i] = mu_robust + sign * threshold
+                outlier_count += 1
+        
+        if outlier_count > 0:
+            print(f"🔧 Робастная обработка: обнаружено {outlier_count} выбросов из {len(data)} точек")
+            print(f"   μ̂ = {mu_robust:.4f}, σ̂ = {sigma_robust:.4f}")
+        
+        return data_robust
+    
+    # ==================== КОЭФФИЦИЕНТЫ АДАПТАЦИИ ====================
+    # Формулы 2.6, 2.12
+    
+    def _alpha_correction(self, n):
+        """
+        Формула 2.6: Корректирующий коэффициент α(n)
+        
+        α(n) = 1 + ln(20/n) для n < 20
+        α(n) = 1.0 для n >= 20
+        
+        При n=5: α ≈ 2.39 (максимальное усиление штрафа)
+        При n=20: α = 1.0 (стандартное взвешивание)
+        """
+        if n < 20:
+            return 1 + np.log(20 / n)
+        return 1.0
+    
+    def _kappa_correction(self, n):
+        """
+        Формула 2.12: Коэффициент κ(n) для весов ансамбля
+        
+        κ(n) = 1 + 0.5 × (20-n)/15
+        
+        При n=5: κ = 1.5 (максимальная коррекция)
+        При n=20: κ = 1.0 (без коррекции)
+        """
+        if 5 <= n <= 20:
+            return 1 + 0.5 * (20 - n) / 15
+        elif n < 5:
+            return 1.5  # Максимальная коррекция
+        return 1.0
+    
+    # ==================== АДАПТИВНЫЙ ВЕС LLM ====================
+    # Формулы 2.16, 2.17
+    
+    def _confidence_score(self, n):
+        """
+        Формула 2.16: Оценка достоверности
+        
+        Confidence_Score = 1 - (n/20) × 0.8
+        
+        Чем короче ряд, тем выше неопределенность
+        """
+        return 1 - (n / 20) * 0.8 if n <= 20 else 0.2
+    
+    def _w_llm(self, n):
+        """
+        Формула 2.17: Адаптивный вес LLM-коррекции
+        
+        w_LLM(n) = 0.15 + 0.35 × (n-5)/15  для 5 ≤ n ≤ 20
+        w_LLM(n) = 0.5                      для n > 20
+        w_LLM(n) = 0.1                      для n < 5
+        
+        При коротких рядах доверие к LLM минимально (0.15)
+        При длинных рядах доверие максимально (0.5)
+        """
+        if 5 <= n <= 20:
+            return 0.15 + 0.35 * (n - 5) / 15
+        elif n > 20:
+            return 0.5
+        else:
+            return 0.1
+    
+    # ==================== КОРРЕКЦИЯ СМЕЩЕНИЯ ====================
+    # Формулы 2.8, 2.9
+    
+    def _delta_bias(self, n, h):
+        """
+        Формулы 2.8, 2.9: Коррекция смещения малой выборки
+        
+        Δ_bias(n, h) = γ × h × σ̂ × √(1/n + 1/T)
+        
+        Где:
+        - γ = 0.15 (коэффициент компенсации)
+        - h = горизонт прогноза
+        - σ̂ = робастная оценка стандартного отклонения
+        - n = длина ряда
+        - T = 100 (теоретическая длина нормального ряда)
+        """
+        if self.std_estimate is None:
+            sigma = np.std(self.data) if self.data is not None else 1.0
+        else:
+            sigma = self.std_estimate
+        
+        # Формула 2.9
+        uncertainty_factor = np.sqrt(1/n + 1/self.T_NORMAL)
+        delta = self.GAMMA_BIAS * h * sigma * uncertainty_factor
+        
+        return delta
+    
+    # ==================== ДИНАМИЧЕСКИЕ ВЕСА EWA ====================
+    # Формулы 2.5, 2.7, 2.11
+    
+    def _update_weights(self, errors):
+        """
+        Обновление весов моделей по формулам 2.5, 2.7, 2.11
+        
+        Формула 2.7: ER_i(t) = λ × ER_i(t-1) + (1-λ) × |y - ŷ_i|
+        Формула 2.5/2.11: w_i(t) = exp(-β × ER_i(t) × α(n)) / Σ exp(...)
+        
+        С параметрами:
+        - β = 1.2 (чувствительность)
+        - λ = 0.8 (затухание)
+        - α(n) = 1 + ln(20/n) (коррекция на малую выборку)
+        """
+        n = len(self.data)
+        alpha = self._alpha_correction(n)
+        kappa = self._kappa_correction(n)
+        
+        print(f"📐 Коэффициенты: α(n={n}) = {alpha:.4f}, κ(n) = {kappa:.4f}")
+        
+        # Формула 2.7: Обновление истории ошибок с экспоненциальным сглаживанием
+        for model in ['sarima', 'xgboost', 'timellm']:
+            self.error_history[model] = (
+                self.decay_factor * self.error_history[model] + 
+                (1 - self.decay_factor) * errors.get(model, 0)
+            )
+        
+        # Формула 2.5/2.11: Вычисление весов
+        # w_i = exp(-β × ER_i × α × κ) / Σ
+        exp_weights = {}
+        for model in ['sarima', 'xgboost', 'timellm']:
+            exp_weights[model] = np.exp(
+                -self.BETA * self.error_history[model] * alpha * kappa
+            )
+        
+        # Нормализация
+        total = sum(exp_weights.values())
+        
+        if total > 0:
+            for model in ['sarima', 'xgboost', 'timellm']:
+                self.weights[model] = exp_weights[model] / total
+        else:
+            # Fallback: равные веса
+            for model in ['sarima', 'xgboost', 'timellm']:
+                self.weights[model] = 1/3
+    
+    # ==================== СОЗДАНИЕ/УДАЛЕНИЕ TimeLLM ====================
     
     def _create_timellm(self):
         """Создание TimeLLM модели с предварительной очисткой GPU памяти"""
-        # КРИТИЧНО: Полная очистка GPU памяти перед созданием TimeLLM
         if torch.cuda.is_available():
             print("🧹 Очистка GPU памяти перед созданием TimeLLM...")
             torch.cuda.synchronize()
@@ -79,7 +287,6 @@ class HybridModel:
         if self.timellm is not None:
             print("🗑️ Удаление TimeLLM модели...")
             
-            # Удаляем внутреннюю модель NeuralForecast
             if hasattr(self.timellm, 'model') and self.timellm.model is not None:
                 del self.timellm.model
                 self.timellm.model = None
@@ -87,7 +294,6 @@ class HybridModel:
             del self.timellm
             self.timellm = None
         
-        # Полная очистка GPU памяти
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
@@ -97,77 +303,49 @@ class HybridModel:
             allocated = torch.cuda.memory_allocated(0) / 1024**3
             reserved = torch.cuda.memory_reserved(0) / 1024**3
             print(f"🧹 GPU память после удаления: выделено={allocated:.2f} GB, зарезервировано={reserved:.2f} GB")
-        
-    def _correction_factor(self, n):
-        """Коэффициент коррекции на основе размера выборки"""
-        return 1 + np.log(30 / n) if n < 30 else 1.0
     
-    def _update_weights(self, errors):
-        """
-        Обновление весов моделей на основе ошибок
-        
-        errors: dict {'sarima': error, 'xgboost': error, 'timellm': error}
-        """
-        n = len(self.data)
-        alpha = self._correction_factor(n)
-        
-        # Обновление истории ошибок с экспоненциальным сглаживанием
-        for model in ['sarima', 'xgboost', 'timellm']:
-            self.error_history[model] = (
-                self.decay_factor * self.error_history[model] + 
-                (1 - self.decay_factor) * errors.get(model, 0)
-            )
-        
-        # Вычисление весов: w_i = exp(-β * ER_i * α) / Σ
-        beta = 1.0  # Параметр чувствительности
-        
-        exp_weights = {}
-        for model in ['sarima', 'xgboost', 'timellm']:
-            exp_weights[model] = np.exp(-beta * self.error_history[model] * alpha)
-        
-        # Нормализация
-        total = sum(exp_weights.values())
-        
-        if total > 0:
-            for model in ['sarima', 'xgboost', 'timellm']:
-                self.weights[model] = exp_weights[model] / total
-        else:
-            # Fallback: равные веса
-            for model in ['sarima', 'xgboost', 'timellm']:
-                self.weights[model] = 1/3
+    # ==================== ОБУЧЕНИЕ ====================
     
     def fit(self, data):
         """
-        Обучение всех моделей с последовательной валидацией.
+        Обучение гибридной модели с робастной предобработкой
         
-        Для честной оценки весов TimeLLM обучается дважды:
-        1. На train_data для валидации (затем удаляется)
-        2. На полных данных для финального использования
-        
-        Это обеспечивает корректную оценку ошибок для взвешивания ансамбля.
+        Этапы:
+        1. Робастная обработка выбросов (Формулы 2.13, 2.14)
+        2. Обучение базовых моделей (SARIMA, XGBoost, TimeLLM)
+        3. Валидация и расчёт ошибок
+        4. Обновление весов EWA (Формулы 2.5, 2.7, 2.11)
         """
         self.data = data
         n = len(data)
+        
+        print("\n" + "="*60)
+        print(f"🚀 ГИБРИДНАЯ МОДЕЛЬ: Обучение на {n} точках")
+        print(f"   Диапазон экстремально коротких рядов: 5 ≤ n ≤ 20")
+        print("="*60)
+        
+        # ==================== Шаг 1: Робастная предобработка ====================
+        print("\n📊 Шаг 1: Робастная обработка выбросов (MAD)...")
+        self.data_robust = self._robust_preprocess(data)
         
         # Определяем нужна ли валидация для весов
         need_validation = n > 10
         
         if need_validation:
             split = int(0.8 * n)
-            train_data = data[:split]
-            val_data = data[split:]
+            train_data = self.data_robust[:split]
+            val_data = self.data_robust[split:]
             val_steps = len(val_data)
         
         errors = {}
         
-        # ==================== SARIMA ====================
+        # ==================== Шаг 2: SARIMA ====================
         print("\n" + "="*50)
-        print("📊 Обучение SARIMA...")
+        print("📊 Шаг 2a: Обучение SARIMA-XS...")
         print("="*50)
         
         try:
             if need_validation:
-                # Валидация на train/val split
                 temp_sarima = SARIMAXS(use_cv=False)
                 temp_sarima.fit(train_data)
                 pred = temp_sarima.predict(val_steps, return_conf_int=False)['forecast']
@@ -175,22 +353,20 @@ class HybridModel:
                 print(f"✅ SARIMA валидация: MAE = {errors['sarima']:.4f}")
                 del temp_sarima
             
-            # Обучение на полных данных
-            self.sarima.fit(data)
+            self.sarima.fit(self.data_robust)
             print("✅ SARIMA обучена на полных данных")
             
         except Exception as e:
             print(f"⚠️ SARIMA ошибка: {e}")
             errors['sarima'] = float('inf')
         
-        # ==================== XGBoost ====================
+        # ==================== Шаг 3: XGBoost ====================
         print("\n" + "="*50)
-        print("📊 Обучение XGBoost...")
+        print("📊 Шаг 2b: Обучение XGBoost...")
         print("="*50)
         
         try:
             if need_validation:
-                # Валидация на train/val split
                 temp_xgb = XGBoostTS(use_cv=False)
                 temp_xgb.fit(train_data)
                 pred = temp_xgb.predict(val_steps, return_conf_int=False)['forecast']
@@ -198,24 +374,22 @@ class HybridModel:
                 print(f"✅ XGBoost валидация: MAE = {errors['xgboost']:.4f}")
                 del temp_xgb
             
-            # Обучение на полных данных
-            self.xgboost.fit(data)
+            self.xgboost.fit(self.data_robust)
             print("✅ XGBoost обучена на полных данных")
             
         except Exception as e:
             print(f"⚠️ XGBoost ошибка: {e}")
             errors['xgboost'] = float('inf')
         
-        # ==================== TimeLLM ====================
+        # ==================== Шаг 4: TimeLLM ====================
         print("\n" + "="*50)
-        print("📊 Обучение TimeLLM...")
+        print("📊 Шаг 2c: Обучение TimeLLM...")
         print("="*50)
         
         try:
             if need_validation and self.use_slm:
-                # ШАГ 1: Валидация - обучаем TimeLLM на train_data
                 print("🔄 Этап 1: Валидация TimeLLM на train_data...")
-                self._destroy_timellm()  # Убедимся что память свободна
+                self._destroy_timellm()
                 
                 temp_timellm = self._create_timellm()
                 temp_timellm.fit(train_data)
@@ -228,7 +402,6 @@ class HybridModel:
                 
                 print(f"✅ TimeLLM валидация: MAE = {errors['timellm']:.4f}")
                 
-                # Удаляем временную модель и освобождаем GPU память
                 del temp_timellm
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
@@ -239,25 +412,22 @@ class HybridModel:
                     allocated = torch.cuda.memory_allocated(0) / 1024**3
                     print(f"🧹 GPU память после валидации: {allocated:.2f} GB")
                 
-                # ШАГ 2: Обучение на полных данных
                 print("🔄 Этап 2: Обучение TimeLLM на полных данных...")
             
-            # Создаём и обучаем финальную модель
             self.timellm = self._create_timellm()
-            self.timellm.fit(data)
+            self.timellm.fit(self.data_robust)
             print("✅ TimeLLM обучена на полных данных")
             
         except Exception as e:
             print(f"⚠️ TimeLLM ошибка: {e}")
             errors['timellm'] = float('inf')
-            # Создаём fallback Simple модель
             self.timellm = TimeLLM(llm_backend="simple")
-            self.timellm.fit(data)
+            self.timellm.fit(self.data_robust)
         
-        # ==================== Обновление весов ====================
+        # ==================== Шаг 5: Обновление весов ====================
         if need_validation:
             print("\n" + "="*50)
-            print("📊 Обновление весов ансамбля...")
+            print("📊 Шаг 3: Обновление весов ансамбля (EWA)...")
             print("="*50)
             print(f"   SARIMA MAE:  {errors.get('sarima', 'N/A')}")
             print(f"   XGBoost MAE: {errors.get('xgboost', 'N/A')}")
@@ -265,46 +435,56 @@ class HybridModel:
             
             self._update_weights(errors)
             
-            print(f"\n📊 Итоговые веса:")
+            print(f"\n📊 Итоговые веса (Формула 2.11):")
             print(f"   SARIMA:  {self.weights['sarima']:.4f}")
             print(f"   XGBoost: {self.weights['xgboost']:.4f}")
             print(f"   TimeLLM: {self.weights['timellm']:.4f}")
         
-        print("\n" + "="*50)
+        # Информация об адаптивных коэффициентах
+        print(f"\n📐 Адаптивные коэффициенты для n={n}:")
+        print(f"   α(n) = {self._alpha_correction(n):.4f} (Формула 2.6)")
+        print(f"   κ(n) = {self._kappa_correction(n):.4f} (Формула 2.12)")
+        print(f"   w_LLM(n) = {self._w_llm(n):.4f} (Формула 2.17)")
+        print(f"   Confidence = {self._confidence_score(n):.4f} (Формула 2.16)")
+        
+        print("\n" + "="*60)
         print("✅ Гибридная модель обучена")
-        print("="*50 + "\n")
+        print("="*60 + "\n")
         
         return self
     
-    def predict(self, steps, return_conf_int=True, alpha=0.05):
+    # ==================== ПРОГНОЗИРОВАНИЕ ====================
+    
+    def predict(self, steps, return_conf_int=True, alpha=0.05, llm_correction=None):
         """
-        Прогнозирование на steps шагов вперёд
+        Прогнозирование по Формуле 2.18:
+        
+        Ŷ_final(t+h) = Ŷ_ensemble(t+h) + Δ_bias(n,h) + w_LLM(n) × Δ_LLM(t+h)
         
         Args:
-            steps: количество шагов прогноза
+            steps: количество шагов прогноза (h)
             return_conf_int: возвращать ли доверительные интервалы
             alpha: уровень значимости (0.05 = 95% интервал)
+            llm_correction: внешняя коррекция от LLM-эксперта (Δ_LLM)
             
         Returns:
-            dict: {
-                'forecast': взвешенный прогноз,
-                'lower_bound': нижняя граница (если return_conf_int=True),
-                'upper_bound': верхняя граница (если return_conf_int=True),
-                'weights': веса моделей,
-                'individual_forecasts': прогнозы отдельных моделей
-            }
+            dict с прогнозом и метаданными
         """
+        n = len(self.data)
+        
         forecasts = {}
         lower_bounds = {}
         upper_bounds = {}
         
+        # ==================== Прогнозы базовых моделей ====================
+        
         # SARIMA
         try:
             result = self.sarima.predict(steps, return_conf_int=return_conf_int, alpha=alpha)
-            forecasts['sarima'] = result['forecast']
+            forecasts['sarima'] = np.array(result['forecast'])
             if return_conf_int:
-                lower_bounds['sarima'] = result['lower_bound']
-                upper_bounds['sarima'] = result['upper_bound']
+                lower_bounds['sarima'] = np.array(result['lower_bound'])
+                upper_bounds['sarima'] = np.array(result['upper_bound'])
         except Exception as e:
             print(f"Warning: SARIMA prediction failed: {e}")
             forecasts['sarima'] = np.zeros(steps)
@@ -315,10 +495,10 @@ class HybridModel:
         # XGBoost
         try:
             result = self.xgboost.predict(steps, return_conf_int=return_conf_int, alpha=alpha)
-            forecasts['xgboost'] = result['forecast']
+            forecasts['xgboost'] = np.array(result['forecast'])
             if return_conf_int:
-                lower_bounds['xgboost'] = result['lower_bound']
-                upper_bounds['xgboost'] = result['upper_bound']
+                lower_bounds['xgboost'] = np.array(result['lower_bound'])
+                upper_bounds['xgboost'] = np.array(result['upper_bound'])
         except Exception as e:
             print(f"Warning: XGBoost prediction failed: {e}")
             forecasts['xgboost'] = np.zeros(steps)
@@ -329,10 +509,10 @@ class HybridModel:
         # TimeLLM
         try:
             result = self.timellm.predict(steps, return_conf_int=return_conf_int, alpha=alpha)
-            forecasts['timellm'] = result['forecast']
+            forecasts['timellm'] = np.array(result['forecast'])
             if return_conf_int:
-                lower_bounds['timellm'] = result['lower_bound']
-                upper_bounds['timellm'] = result['upper_bound']
+                lower_bounds['timellm'] = np.array(result['lower_bound'])
+                upper_bounds['timellm'] = np.array(result['upper_bound'])
         except Exception as e:
             print(f"Warning: TimeLLM prediction failed: {e}")
             forecasts['timellm'] = np.zeros(steps)
@@ -340,15 +520,46 @@ class HybridModel:
                 lower_bounds['timellm'] = np.zeros(steps)
                 upper_bounds['timellm'] = np.zeros(steps)
         
-        # Взвешенная комбинация
-        hybrid_forecast = (
+        # ==================== Формула 2.10: Ансамблевый прогноз ====================
+        ensemble_forecast = (
             self.weights['sarima'] * forecasts['sarima'] +
             self.weights['xgboost'] * forecasts['xgboost'] +
             self.weights['timellm'] * forecasts['timellm']
         )
         
+        # ==================== Формула 2.8, 2.9: Коррекция смещения ====================
+        # Δ_bias применяется к каждому шагу прогноза
+        bias_corrections = np.array([self._delta_bias(n, h+1) for h in range(steps)])
+        
+        # ==================== Формула 2.17: Адаптивный вес LLM ====================
+        w_llm = self._w_llm(n)
+        
+        # ==================== Формула 2.18: Финальный прогноз ====================
+        # Ŷ_final = Ŷ_ensemble + Δ_bias + w_LLM × Δ_LLM
+        
+        if llm_correction is not None:
+            # Внешняя LLM коррекция передана
+            delta_llm = np.array(llm_correction)
+            if len(delta_llm) != steps:
+                delta_llm = np.resize(delta_llm, steps)
+        else:
+            # Без LLM коррекции
+            delta_llm = np.zeros(steps)
+        
+        final_forecast = ensemble_forecast + bias_corrections + w_llm * delta_llm
+        
+        print(f"\n📊 Прогноз (Формула 2.18):")
+        print(f"   Ŷ_ensemble: {ensemble_forecast[:3]}...")
+        print(f"   Δ_bias: {bias_corrections[:3]}...")
+        print(f"   w_LLM × Δ_LLM: {(w_llm * delta_llm)[:3]}...")
+        print(f"   Ŷ_final: {final_forecast[:3]}...")
+        
         result = {
-            'forecast': hybrid_forecast,
+            'forecast': final_forecast,
+            'ensemble_forecast': ensemble_forecast,
+            'bias_correction': bias_corrections,
+            'llm_weight': w_llm,
+            'llm_correction': w_llm * delta_llm,
             'weights': self.weights.copy(),
             'individual_forecasts': forecasts
         }
@@ -367,13 +578,16 @@ class HybridModel:
                 self.weights['timellm'] * upper_bounds['timellm']
             )
             
-            result['lower_bound'] = hybrid_lower
-            result['upper_bound'] = hybrid_upper
+            # Добавляем Δ_bias к доверительным интервалам
+            result['lower_bound'] = hybrid_lower + bias_corrections
+            result['upper_bound'] = hybrid_upper + bias_corrections
         
         return result
     
+    # ==================== МЕТРИКИ ====================
+    
     def get_metrics(self, y_true, y_pred):
-        """Расчёт метрик качества"""
+        """Расчёт метрик качества, включая NMAE (Формула 2.21)"""
         mae = np.mean(np.abs(y_true - y_pred))
         rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
         mape = np.mean(np.abs((y_true - y_pred) / (y_true + 1e-8))) * 100
@@ -383,34 +597,54 @@ class HybridModel:
         ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
         r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
         
+        # Формула 2.21: Нормализованная MAE
+        sigma_real = np.std(y_true)
+        nmae = mae / sigma_real if sigma_real > 0 else mae
+        
         return {
             'MAE': mae,
             'RMSE': rmse,
             'MAPE': mape,
-            'R2': r2
+            'R2': r2,
+            'NMAE': nmae  # Формула 2.21
         }
     
     def get_info(self):
-        """Информация о модели"""
+        """Информация о модели с параметрами из диссертации"""
+        n = len(self.data) if self.data is not None else 0
+        
         info = {
             'weights': self.weights,
-            'error_history': self.error_history
+            'error_history': self.error_history,
+            'parameters': {
+                'beta': self.BETA,
+                'lambda': self.decay_factor,
+                'gamma_bias': self.GAMMA_BIAS,
+                'T_normal': self.T_NORMAL,
+                'MAD_threshold': self.MAD_THRESHOLD
+            },
+            'adaptive_coefficients': {
+                'alpha_n': self._alpha_correction(n) if n > 0 else None,
+                'kappa_n': self._kappa_correction(n) if n > 0 else None,
+                'w_llm_n': self._w_llm(n) if n > 0 else None,
+                'confidence_score': self._confidence_score(n) if n > 0 else None
+            }
         }
         
-        # Безопасное получение информации о моделях
+        # Информация о базовых моделях
         try:
             info['sarima_info'] = self.sarima.get_info()
         except:
-            info['sarima_info'] = {'status': 'Ошибка получения информации'}
+            info['sarima_info'] = {'status': 'Ошибка'}
         
         try:
             info['xgboost_info'] = self.xgboost.get_info()
         except:
-            info['xgboost_info'] = {'status': 'Ошибка получения информации'}
+            info['xgboost_info'] = {'status': 'Ошибка'}
         
         try:
-            info['timellm_info'] = self.timellm.get_info()
+            info['timellm_info'] = self.timellm.get_info() if self.timellm else {'status': 'Не инициализирована'}
         except:
-            info['timellm_info'] = {'status': 'Ошибка получения информации'}
+            info['timellm_info'] = {'status': 'Ошибка'}
         
         return info
