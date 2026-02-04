@@ -35,10 +35,10 @@
                         <option value="hybrid">Гибридная (рекомендуется)</option>
                         <option value="sarima">SARIMA-XS (быстро)</option>
                         <option value="xgboost">XGBoost (быстро)</option>
-                        <option value="timellm">TimeLLM (медленно, 2-10 мин)</option>
+                        <option value="timellm">TimeLLM (1-2 мин, базовое качество)</option>
                     </select>
                     <small id="modelWarning" style="color: #e74c3c; display: none; margin-top: 5px;">
-                        ⚠️ TimeLLM требует GPU и обучается 2-10 минут
+                        ⚠️ TimeLLM: быстрый режим (max_steps=20) для API. Обучается ~1-2 минуты.
                     </small>
                 </div>
                 
@@ -168,9 +168,9 @@
                 document.getElementById('forecastBtn').textContent = '⏳ Прогнозирование...';
                 document.getElementById('forecastBtn').disabled = true;
 
-                // Создаём AbortController для возможности отмены (timeout 10 минут для TimeLLM)
+                // Создаём AbortController для возможности отмены (timeout 5 минут для быстрого режима)
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 минут
+                const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 минут
 
                 const response = await fetch(`${API_URL}/forecast`, {
                     method: 'POST',
@@ -190,7 +190,7 @@
                 }
             } catch (error) {
                 if (error.name === 'AbortError') {
-                    alert('⏱️ Превышено время ожидания (10 минут).\n\nTimeLLM требует длительного обучения.\nПопробуйте:\n- Использовать модель SARIMA или XGBoost\n- Уменьшить количество данных');
+                    alert('⏱️ Превышено время ожидания (5 минут).\n\nTimeLLM может требовать больше времени.\nПопробуйте:\n- Модель SARIMA или XGBoost (результат за 30 сек)\n- Гибридную модель (комбинирует все модели)\n- Уменьшить количество данных для TimeLLM');
                 } else {
                     alert(`Ошибка: ${error.message}`);
                 }
