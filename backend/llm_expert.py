@@ -359,9 +359,9 @@ class LLMExpert:
         """
         Строит системный промпт для анализа данных.
         """
-        return """Ты помощник для работы с числовыми данными. 
-Анализируй предоставленные числа и отвечай в формате JSON.
-Будь точным и используй только данные из запроса."""
+        return """Ты помощник для анализа числовых данных.
+ОТВЕЧАЙ ТОЛЬКО В ФОРМАТЕ JSON, без пояснений до или после.
+Пример ответа: {"weights": [0.98, 1.02, 1.0], "comment": "причина"}"""
     
     def _build_user_prompt(
         self,
@@ -391,34 +391,35 @@ class LLMExpert:
         expected_next = last_val + trend  # Ожидаемое значение по тренду
         forecast_vs_trend = "выше" if first_forecast > expected_next else "ниже"
         
-        # Формируем промпт с конкретным анализом
-        prompt = f"""Задача: оценить качество модельных значений.
+        # Формируем примеры коэффициентов на основе анализа
+        # Если первое значение выше тренда - предлагаем уменьшить (0.97-0.99)
+        # Если ниже - предлагаем увеличить (1.01-1.03)
+        if first_forecast > expected_next:
+            example_first = 0.98
+            example_reason = "первое значение выше тренда"
+        else:
+            example_first = 1.02
+            example_reason = "первое значение ниже тренда"
+        
+        # Генерируем пример весов
+        example_weights = [round(example_first + 0.01 * i, 2) for i in range(n_points)]
+        
+        # Формируем промпт с КОНКРЕТНЫМ примером
+        prompt = f"""Данные для анализа:
+- Последние значения: {last_values}
+- Тренд: {trend:+.2f} ({trend_direction})
+- Последнее: {last_val:.2f}, ожидаемое по тренду: {expected_next:.2f}
 
-ИСХОДНЫЕ ДАННЫЕ:
-- Последние 5 значений ряда: {last_values}
-- Среднее: {mean_val:.2f}, разброс: {std_val:.2f}
-- Тренд за период: {trend:+.2f} ({trend_direction})
-- Последнее значение: {last_val:.2f}
+Модельные значения: {forecast.tolist()}
 
-МОДЕЛЬНЫЕ ЗНАЧЕНИЯ для оценки: {forecast.tolist()}
+Первое значение ({first_forecast:.2f}) {forecast_vs_trend} ожидаемого ({expected_next:.2f}), скачок {jump_pct:+.1f}%.
 
-АНАЛИЗ:
-- Первое модельное значение ({first_forecast:.2f}) {forecast_vs_trend} ожидаемого по тренду ({expected_next:.2f})
-- Скачок от последнего значения: {jump_pct:+.1f}%
+Выдай {n_points} коэффициентов (0.95-1.05): завышено=0.97, норма=1.0, занижено=1.03
 
-ЗАДАНИЕ:
-Оцени каждое из {n_points} модельных значений. Для каждого укажи коэффициент:
-- 1.0 = значение адекватно
-- 0.95-0.99 = немного завышено, лучше уменьшить
-- 1.01-1.05 = немного занижено, лучше увеличить
+Пример ответа:
+{{"weights": {example_weights}, "comment": "{example_reason}"}}
 
-Учитывай:
-1. Соответствие тренду (тренд {trend_direction})
-2. Плавность перехода от последнего значения ({last_val:.2f})
-3. Нахождение в пределах разброса (±{std_val:.2f})
-
-Ответ строго в JSON:
-{{"weights": [{', '.join(['<число>' for _ in range(n_points)])}], "comment": "<почему такие коэффициенты>"}}"""
+Твой ответ (ТОЛЬКО JSON):"""
 
         # Добавляем внешний контекст если есть
         if web_context and key_facts:
@@ -431,6 +432,90 @@ class LLMExpert:
 При наличии информации о росте/падении учти её в коэффициентах (диапазон 0.9-1.1)."""
         
         return prompt
+
+    def _extract_coefficients_from_text(self, text: str, expected_count: int) -> List[float]:
+        """
+        Извлекает коэффициенты из текстового ответа LLM.
+        Ищет числа в диапазоне 0.9-1.1 или слова-маркеры (завышено/занижено).
+        
+        Args:
+            text: текстовый ответ LLM
+            expected_count: ожидаемое количество коэффициентов
+            
+        Returns:
+            Список коэффициентов или пустой список
+        """
+        coefficients = []
+        
+        # 1. Пробуем найти массив чисел в квадратных скобках
+        array_match = re.search(r'\[\s*([\d.,\s]+)\s*\]', text)
+        if array_match:
+            numbers_str = array_match.group(1)
+            numbers = re.findall(r'(\d+\.?\d*)', numbers_str)
+            for num in numbers:
+                try:
+                    val = float(num)
+                    if 0.8 <= val <= 1.2:
+                        coefficients.append(val)
+                except ValueError:
+                    continue
+            
+            if len(coefficients) == expected_count:
+                return coefficients
+        
+        # 2. Ищем числа типа 0.97, 1.02 в тексте
+        decimal_numbers = re.findall(r'(?:^|[^\d])(\d\.\d{1,2})(?:[^\d]|$)', text)
+        for num in decimal_numbers:
+            try:
+                val = float(num)
+                if 0.9 <= val <= 1.1:
+                    coefficients.append(val)
+            except ValueError:
+                continue
+        
+        if len(coefficients) >= expected_count:
+            return coefficients[:expected_count]
+        
+        # 3. Анализируем текст на слова-маркеры
+        coefficients = []
+        text_lower = text.lower()
+        
+        # Паттерны для каждой точки
+        patterns = {
+            'завышен': 0.97,
+            'выше': 0.97,
+            'переоценен': 0.97,
+            'занижен': 1.03,
+            'ниже': 1.03,
+            'недооценен': 1.03,
+            'адекватн': 1.0,
+            'норм': 1.0,
+            'соответств': 1.0,
+        }
+        
+        # Ищем упоминания для каждой точки
+        for i in range(expected_count):
+            point_markers = [f'{i+1}-', f'{i+1}.', f'{i+1})', f'перв' if i==0 else f'втор' if i==1 else f'трет' if i==2 else f'{i+1}']
+            
+            coef = 1.0  # По умолчанию
+            for marker in point_markers:
+                # Ищем контекст вокруг маркера
+                marker_pos = text_lower.find(marker.lower())
+                if marker_pos != -1:
+                    context = text_lower[marker_pos:marker_pos+100]
+                    for pattern, value in patterns.items():
+                        if pattern in context:
+                            coef = value
+                            break
+                    break
+            
+            coefficients.append(coef)
+        
+        # Проверяем, есть ли хоть какие-то отличия от 1.0
+        if any(c != 1.0 for c in coefficients):
+            return coefficients
+        
+        return []  # Не удалось извлечь
 
     def _validate_correction_factors(
         self, 
@@ -643,16 +728,37 @@ class LLMExpert:
                 }
             
         except json.JSONDecodeError as e:
-            print(f"❌ Ошибка парсинга JSON: {e}")
-            print(f"   Ответ LLM: {llm_response[:200]}...")
+            print(f"⚠️  JSON не распознан, пробуем извлечь числа из текста...")
+            print(f"   Ответ LLM: {llm_response[:300]}...")
             
-            # Fallback
+            # Fallback: извлечение чисел из текстового ответа
+            correction_factors = self._extract_coefficients_from_text(llm_response, len(forecast))
+            
+            if correction_factors and any(f != 1.0 for f in correction_factors):
+                print(f"✅ Извлечены коэффициенты из текста: {correction_factors}")
+                corrected_forecast = forecast * np.array(correction_factors)
+                corrected_lower = lower_bound * np.array(correction_factors)
+                corrected_upper = upper_bound * np.array(correction_factors)
+                
+                return {
+                    'corrected_forecast': corrected_forecast,
+                    'corrected_lower': corrected_lower,
+                    'corrected_upper': corrected_upper,
+                    'analysis': llm_response[:500],  # Используем текст как анализ
+                    'reasoning': 'Коэффициенты извлечены из текстового ответа',
+                    'confidence': 0.3,
+                    'sources_used': [],
+                    'correction_factors': correction_factors,
+                    'correction_applied': True
+                }
+            
+            # Полный fallback
             return {
                 'corrected_forecast': forecast,
                 'corrected_lower': lower_bound,
                 'corrected_upper': upper_bound,
                 'analysis': self._basic_analysis(historical_data, forecast),
-                'reasoning': f'Ошибка парсинга ответа LLM: {e}',
+                'reasoning': f'Не удалось извлечь коэффициенты из ответа LLM',
                 'confidence': 0.0,
                 'sources_used': [],
                 'correction_factors': [1.0] * len(forecast),
