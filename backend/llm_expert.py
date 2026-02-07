@@ -1,15 +1,22 @@
 """
 LLM-эксперт с YandexGPT для анализа и КОРРЕКЦИИ прогноза
 Использует OpenAI-совместимый API Yandex Cloud
+
+Особенности:
+- Жёсткая привязка к веб-контексту и данным прогноза
+- Улучшенное извлечение текста из HTML
+- Структурированный промпт с чёткими ограничениями
 """
 
 import os
+import re
 import requests
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import json
 import traceback
 from datetime import datetime
+from html.parser import HTMLParser
 
 try:
     import openai
@@ -17,6 +24,51 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
     print("⚠️  openai не установлен. Установите: pip install openai")
+
+
+class HTMLTextExtractor(HTMLParser):
+    """
+    Парсер для извлечения чистого текста из HTML.
+    Удаляет скрипты, стили, комментарии и HTML-теги.
+    """
+    
+    # Теги, содержимое которых нужно полностью игнорировать
+    SKIP_TAGS = {'script', 'style', 'noscript', 'iframe', 'svg', 'canvas', 'template'}
+    
+    # Теги, после которых нужен перенос строки
+    BLOCK_TAGS = {'p', 'div', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 
+                  'li', 'tr', 'article', 'section', 'header', 'footer'}
+    
+    def __init__(self):
+        super().__init__()
+        self.text_parts = []
+        self.skip_depth = 0  # Глубина вложенности в пропускаемые теги
+        
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in self.SKIP_TAGS:
+            self.skip_depth += 1
+        elif tag.lower() in self.BLOCK_TAGS and self.skip_depth == 0:
+            self.text_parts.append('\n')
+            
+    def handle_endtag(self, tag):
+        if tag.lower() in self.SKIP_TAGS:
+            self.skip_depth = max(0, self.skip_depth - 1)
+        elif tag.lower() in self.BLOCK_TAGS and self.skip_depth == 0:
+            self.text_parts.append('\n')
+            
+    def handle_data(self, data):
+        if self.skip_depth == 0:
+            text = data.strip()
+            if text:
+                self.text_parts.append(text)
+                
+    def get_text(self) -> str:
+        """Возвращает извлечённый текст"""
+        raw_text = ' '.join(self.text_parts)
+        # Убираем множественные пробелы и переносы
+        clean_text = re.sub(r'\s+', ' ', raw_text)
+        clean_text = re.sub(r'\n\s*\n', '\n', clean_text)
+        return clean_text.strip()
 
 
 class LLMExpert:
@@ -55,21 +107,128 @@ class LLMExpert:
             if not OPENAI_AVAILABLE:
                 print(f"   - OpenAI: ✗ Не установлен (pip install openai)")
 
-    def _fetch_web_context(self, urls: List[str]) -> str:
-        """Извлечение контекста из веб-ссылок"""
-        context = []
+    def _extract_text_from_html(self, html: str) -> str:
+        """
+        Извлекает чистый текст из HTML, удаляя теги, скрипты и стили.
+        
+        Args:
+            html: сырой HTML-код
+            
+        Returns:
+            Чистый текст без HTML-разметки
+        """
+        try:
+            parser = HTMLTextExtractor()
+            parser.feed(html)
+            return parser.get_text()
+        except Exception as e:
+            # Fallback: простое удаление тегов регулярным выражением
+            text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r'<[^>]+>', ' ', text)
+            text = re.sub(r'\s+', ' ', text)
+            return text.strip()
+    
+    def _extract_key_facts(self, text: str, max_facts: int = 10) -> List[str]:
+        """
+        Извлекает ключевые факты из текста (предложения с числами, датами, процентами).
+        
+        Args:
+            text: исходный текст
+            max_facts: максимальное количество фактов
+            
+        Returns:
+            Список ключевых предложений
+        """
+        # Разбиваем на предложения
+        sentences = re.split(r'[.!?]\s+', text)
+        
+        key_facts = []
+        
+        # Паттерны для поиска релевантных предложений
+        patterns = [
+            r'\d+[,.]?\d*\s*%',           # Проценты: 15%, 3.5%
+            r'\d+[,.]?\d*\s*(млн|млрд|тыс|руб|\$|€|USD|RUB)',  # Суммы
+            r'(рост|падение|снижение|увеличение|сокращение)',   # Тренды
+            r'(прогноз|ожидается|планируется|оценивается)',     # Прогнозы
+            r'(20[0-9]{2}|январ|феврал|март|апрел|май|июн|июл|август|сентябр|октябр|ноябр|декабр)',  # Даты
+            r'(спрос|предложение|цен[ау]|стоимость|курс)',      # Экономические термины
+            r'(инфляци|ставк|ВВП|GDP|индекс)',                  # Макроэкономика
+        ]
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if len(sentence) < 20 or len(sentence) > 500:
+                continue
+                
+            # Проверяем, содержит ли предложение ключевые паттерны
+            for pattern in patterns:
+                if re.search(pattern, sentence, re.IGNORECASE):
+                    key_facts.append(sentence)
+                    break
+            
+            if len(key_facts) >= max_facts:
+                break
+        
+        return key_facts
+
+    def _fetch_web_context(self, urls: List[str], max_chars_per_url: int = 3000) -> Tuple[str, List[str]]:
+        """
+        Извлечение структурированного контекста из веб-ссылок.
+        
+        Args:
+            urls: список URL для загрузки
+            max_chars_per_url: максимум символов на один источник
+            
+        Returns:
+            Tuple[полный_текст, список_ключевых_фактов]
+        """
+        context_parts = []
+        all_key_facts = []
+        
         for url in urls:
             try:
-                response = requests.get(url, timeout=10, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                })
+                response = requests.get(
+                    url, 
+                    timeout=15, 
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8'
+                    }
+                )
+                
                 if response.status_code == 200:
-                    text = response.text[:2000]
-                    context.append(f"Источник: {url}\n{text}\n")
+                    # Извлекаем чистый текст из HTML
+                    clean_text = self._extract_text_from_html(response.text)
+                    
+                    # Ограничиваем длину
+                    if len(clean_text) > max_chars_per_url:
+                        clean_text = clean_text[:max_chars_per_url] + '...'
+                    
+                    # Извлекаем ключевые факты
+                    facts = self._extract_key_facts(clean_text)
+                    all_key_facts.extend(facts)
+                    
+                    context_parts.append(f"\n--- ИСТОЧНИК: {url} ---\n{clean_text}")
+                    print(f"   ✓ Загружен: {url} ({len(clean_text)} символов, {len(facts)} фактов)")
+                else:
+                    context_parts.append(f"\n--- ИСТОЧНИК: {url} ---\nОшибка загрузки: HTTP {response.status_code}")
+                    print(f"   ✗ Ошибка {response.status_code}: {url}")
+                    
+            except requests.Timeout:
+                context_parts.append(f"\n--- ИСТОЧНИК: {url} ---\nОшибка: таймаут соединения")
+                print(f"   ✗ Таймаут: {url}")
             except Exception as e:
-                context.append(f"Не удалось загрузить {url}: {str(e)}\n")
+                context_parts.append(f"\n--- ИСТОЧНИК: {url} ---\nОшибка: {str(e)}")
+                print(f"   ✗ Ошибка: {url} - {e}")
         
-        return "\n".join(context) if context else ""
+        full_context = "\n".join(context_parts) if context_parts else ""
+        
+        # Убираем дубликаты фактов
+        unique_facts = list(dict.fromkeys(all_key_facts))
+        
+        return full_context, unique_facts[:15]  # Максимум 15 уникальных фактов
 
     def test_yandex_gpt(self) -> bool:
         """Тестирование подключения к YandexGPT через OpenAI API"""
@@ -196,6 +355,213 @@ class LLMExpert:
             
             return ""
 
+    def _build_system_prompt(self, has_web_context: bool) -> str:
+        """
+        Строит системный промпт с ЖЁСТКИМИ ограничениями.
+        
+        Args:
+            has_web_context: есть ли веб-контекст
+            
+        Returns:
+            Системный промпт
+        """
+        base_instructions = """
+╔══════════════════════════════════════════════════════════════════╗
+║                    СТРОГИЕ ИНСТРУКЦИИ                            ║
+╚══════════════════════════════════════════════════════════════════╝
+
+Ты — эксперт-аналитик по прогнозированию временных рядов.
+
+▶ ТВОЯ ЕДИНСТВЕННАЯ ЗАДАЧА:
+Скорректировать предоставленный прогноз на основе ТОЛЬКО тех данных,
+которые явно указаны в запросе.
+
+▶ АБСОЛЮТНЫЕ ЗАПРЕТЫ:
+✗ НЕ придумывай факты, которых нет в предоставленных данных
+✗ НЕ используй свои общие знания о рынках/экономике
+✗ НЕ делай предположений о событиях, не упомянутых в контексте
+✗ НЕ ссылайся на информацию вне предоставленного контекста
+✗ НЕ добавляй текст вне JSON-формата
+
+▶ РАЗРЕШЕНО ИСПОЛЬЗОВАТЬ ТОЛЬКО:
+✓ Числовые данные из раздела "ИСТОРИЧЕСКИЕ ДАННЫЕ"
+✓ Значения из раздела "ПРОГНОЗ МОДЕЛИ"
+"""
+        
+        if has_web_context:
+            base_instructions += """
+✓ Факты из раздела "ВЕБ-КОНТЕКСТ" (если предоставлен)
+✓ Ключевые факты из раздела "ИЗВЛЕЧЁННЫЕ ФАКТЫ" (если предоставлены)
+
+▶ ПРАВИЛА РАБОТЫ С ВЕБ-КОНТЕКСТОМ:
+1. Цитируй конкретные числа/факты из контекста в поле "reasoning"
+2. Если в контексте нет релевантной информации — используй коэффициент 1.0
+3. Указывай источник факта (URL) при цитировании
+"""
+        else:
+            base_instructions += """
+
+▶ ВЕБ-КОНТЕКСТ НЕ ПРЕДОСТАВЛЕН:
+Опирайся ТОЛЬКО на статистику исторических данных и прогноз модели.
+Без внешнего контекста используй консервативные коэффициенты (близкие к 1.0).
+"""
+        
+        base_instructions += """
+▶ ФОРМАТ ОТВЕТА:
+Отвечай ИСКЛЮЧИТЕЛЬНО валидным JSON без дополнительного текста:
+
+{
+  "correction_factors": [<число>, <число>, ...],
+  "confidence": <0.0-1.0>,
+  "analysis": "<краткий анализ на основе ТОЛЬКО предоставленных данных>",
+  "reasoning": "<обоснование с ЦИТАТАМИ из контекста>",
+  "sources_used": ["<URL источника или 'исторические данные'>"]
+}
+
+▶ ОГРАНИЧЕНИЯ НА КОЭФФИЦИЕНТЫ:
+- Диапазон: от 0.7 до 1.3 (±30% максимум)
+- Без контекста: от 0.95 до 1.05 (±5% максимум)
+- Количество: РОВНО столько, сколько точек в прогнозе
+"""
+        return base_instructions
+    
+    def _build_user_prompt(
+        self,
+        mean_val: float,
+        std_val: float,
+        trend: float,
+        trend_direction: str,
+        historical_data: np.ndarray,
+        forecast: np.ndarray,
+        lower_bound: np.ndarray,
+        upper_bound: np.ndarray,
+        web_context: str,
+        key_facts: List[str]
+    ) -> str:
+        """
+        Строит пользовательский промпт со всеми данными.
+        """
+        # Базовая часть с данными
+        prompt_parts = [
+            "═" * 60,
+            "ДАННЫЕ ДЛЯ АНАЛИЗА (используй ТОЛЬКО эту информацию)",
+            "═" * 60,
+            "",
+            "▌ ИСТОРИЧЕСКИЕ ДАННЫЕ:",
+            f"  • Количество точек: {len(historical_data)}",
+            f"  • Среднее значение: {mean_val:.4f}",
+            f"  • Стандартное отклонение: {std_val:.4f}",
+            f"  • Тренд: {trend_direction} ({trend:+.4f} за период)",
+            f"  • Минимум: {np.min(historical_data):.4f}",
+            f"  • Максимум: {np.max(historical_data):.4f}",
+            f"  • Последние значения: {historical_data[-10:].tolist()}",
+            "",
+            "▌ ПРОГНОЗ МОДЕЛИ (требуется скорректировать):",
+            f"  • Количество точек прогноза: {len(forecast)}",
+            f"  • Значения прогноза: {forecast.tolist()}",
+            f"  • Нижняя граница (95% CI): {lower_bound.tolist()}",
+            f"  • Верхняя граница (95% CI): {upper_bound.tolist()}",
+            ""
+        ]
+        
+        # Добавляем веб-контекст если есть
+        if web_context:
+            prompt_parts.extend([
+                "═" * 60,
+                "ВЕБ-КОНТЕКСТ (внешние источники)",
+                "═" * 60,
+                web_context,
+                ""
+            ])
+            
+            # Добавляем извлечённые факты
+            if key_facts:
+                prompt_parts.extend([
+                    "═" * 60,
+                    "ИЗВЛЕЧЁННЫЕ КЛЮЧЕВЫЕ ФАКТЫ:",
+                    "═" * 60
+                ])
+                for i, fact in enumerate(key_facts, 1):
+                    prompt_parts.append(f"  {i}. {fact}")
+                prompt_parts.append("")
+        else:
+            prompt_parts.extend([
+                "═" * 60,
+                "ВЕБ-КОНТЕКСТ: НЕ ПРЕДОСТАВЛЕН",
+                "═" * 60,
+                "Внешние источники отсутствуют.",
+                "Используй ТОЛЬКО статистику исторических данных.",
+                "Применяй КОНСЕРВАТИВНЫЕ коэффициенты (0.95-1.05).",
+                ""
+            ])
+        
+        # Финальная инструкция
+        prompt_parts.extend([
+            "═" * 60,
+            "ЗАДАНИЕ",
+            "═" * 60,
+            f"Верни JSON с РОВНО {len(forecast)} коэффициентами коррекции.",
+            "",
+            "Пример ответа:",
+            "{",
+            f'  "correction_factors": [{", ".join(["1.0"] * len(forecast))}],',
+            '  "confidence": 0.7,',
+            '  "analysis": "На основе [конкретный факт из данных]...",',
+            '  "reasoning": "Коэффициент X.XX применён потому что [цитата из контекста]",',
+            '  "sources_used": ["URL источника или исторические данные"]',
+            "}"
+        ])
+        
+        return "\n".join(prompt_parts)
+
+    def _validate_correction_factors(
+        self, 
+        factors: List, 
+        expected_length: int,
+        has_web_context: bool = False
+    ) -> List[float]:
+        """
+        Валидирует и нормализует коэффициенты коррекции.
+        
+        Args:
+            factors: список коэффициентов от LLM
+            expected_length: ожидаемое количество коэффициентов
+            has_web_context: есть ли веб-контекст (влияет на допустимый диапазон)
+            
+        Returns:
+            Валидированный список коэффициентов
+        """
+        # Определяем допустимый диапазон
+        if has_web_context:
+            min_factor, max_factor = 0.7, 1.3  # ±30% с контекстом
+        else:
+            min_factor, max_factor = 0.95, 1.05  # ±5% без контекста
+        
+        validated = []
+        
+        for i, f in enumerate(factors):
+            try:
+                value = float(f)
+                # Ограничиваем диапазон
+                value = max(min_factor, min(max_factor, value))
+                validated.append(value)
+            except (ValueError, TypeError):
+                validated.append(1.0)  # Дефолт при ошибке
+        
+        # Дополняем до нужной длины если нужно
+        while len(validated) < expected_length:
+            validated.append(1.0)
+        
+        # Обрезаем если слишком много
+        validated = validated[:expected_length]
+        
+        # Логируем если были изменения
+        if factors != validated:
+            print(f"⚠️  Коэффициенты скорректированы: {factors} → {validated}")
+            print(f"   Допустимый диапазон: [{min_factor}, {max_factor}]")
+        
+        return validated
+
     def correct_forecast(
         self,
         historical_data: np.ndarray,
@@ -216,20 +582,28 @@ class LLMExpert:
             
         Returns:
             dict с ключами:
-                - forecast: скорректированный прогноз
-                - lower_bound: скорректированная нижняя граница
-                - upper_bound: скорректированная верхняя граница
+                - corrected_forecast: скорректированный прогноз
+                - corrected_lower: скорректированная нижняя граница
+                - corrected_upper: скорректированная верхняя граница
                 - analysis: текстовый анализ от LLM
+                - reasoning: обоснование коррекции
+                - confidence: уверенность модели
+                - sources_used: использованные источники
+                - correction_factors: применённые коэффициенты
                 - correction_applied: был ли применён LLM (True/False)
         """
         
         # Если клиент не инициализирован - возвращаем базовый анализ
         if not self.client:
             return {
-                'forecast': forecast,
-                'lower_bound': lower_bound,
-                'upper_bound': upper_bound,
+                'corrected_forecast': forecast,
+                'corrected_lower': lower_bound,
+                'corrected_upper': upper_bound,
                 'analysis': self._basic_analysis(historical_data, forecast),
+                'reasoning': 'LLM недоступен',
+                'confidence': 0.0,
+                'sources_used': [],
+                'correction_factors': [1.0] * len(forecast),
                 'correction_applied': False
             }
         
@@ -240,56 +614,29 @@ class LLMExpert:
         
         # Контекст из веб-источников
         web_context = ""
+        key_facts = []
         if web_urls:
-            web_context = self._fetch_web_context(web_urls)
-        
-        # Формируем промпт
-        instructions = (
-            "Ты эксперт по анализу временных рядов и прогнозированию. "
-            "Твоя задача - проанализировать прогноз и вернуть коррекцию в формате JSON.\n\n"
-            "ВАЖНО: Отвечай ТОЛЬКО валидным JSON, без дополнительного текста."
-        )
+            print(f"📥 Загрузка веб-контекста из {len(web_urls)} источников...")
+            web_context, key_facts = self._fetch_web_context(web_urls)
         
         # Определяем направление тренда
         trend_direction = "растёт" if trend > 0 else "падает"
         
-        # Блок внешнего контекста
-        web_context_block = ""
-        if web_context:
-            web_context_block = "\nВНЕШНИЙ КОНТЕКСТ:\n{}\n".format(web_context)
+        # Формируем ЖЁСТКИЙ системный промпт
+        instructions = self._build_system_prompt(has_web_context=bool(web_context))
         
-        # Собираем промпт через format()
-        prompt = (
-            "Проанализируй временной ряд и прогноз:\n\n"
-            "ИСТОРИЧЕСКИЕ ДАННЫЕ:\n"
-            "- Среднее значение: {mean_val:.2f}\n"
-            "- Стандартное отклонение: {std_val:.2f}\n"
-            "- Тренд: {trend_direction} ({trend:.2f} в день)\n"
-            "- Последние 10 значений: {last_values}\n\n"
-            "ПРОГНОЗ МОДЕЛИ:\n"
-            "- Значения: {forecast_values}\n"
-            "- 95% доверительный интервал:\n"
-            "  * Нижняя граница: {lower_values}\n"
-            "  * Верхняя граница: {upper_values}\n"
-            "{web_context_block}\n"
-            "ЗАДАЧА:\n"
-            "Верни коэффициенты коррекции для каждой точки прогноза в формате JSON:\n\n"
-            "{{\n"
-            '  "correction_factors": [1.0, 1.05, 0.95, ...],\n'
-            '  "analysis": "краткий анализ тренда и факторов",\n'
-            '  "reasoning": "почему применены эти коэффициенты"\n'
-            "}}\n\n"
-            "Коэффициент 1.0 = без изменений, >1.0 = увеличение, <1.0 = уменьшение."
-        ).format(
+        # Формируем основной промпт
+        prompt = self._build_user_prompt(
             mean_val=mean_val,
             std_val=std_val,
-            trend_direction=trend_direction,
             trend=trend,
-            last_values=historical_data[-10:].tolist(),
-            forecast_values=forecast.tolist(),
-            lower_values=lower_bound.tolist(),
-            upper_values=upper_bound.tolist(),
-            web_context_block=web_context_block
+            trend_direction=trend_direction,
+            historical_data=historical_data,
+            forecast=forecast,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            web_context=web_context,
+            key_facts=key_facts
         )
         
         # Вызов YandexGPT
@@ -302,6 +649,10 @@ class LLMExpert:
                 'corrected_lower': lower_bound,
                 'corrected_upper': upper_bound,
                 'analysis': self._basic_analysis(historical_data, forecast),
+                'reasoning': 'Ошибка вызова LLM',
+                'confidence': 0.0,
+                'sources_used': [],
+                'correction_factors': [1.0] * len(forecast),
                 'correction_applied': False
             }
         
@@ -318,6 +669,16 @@ class LLMExpert:
             
             correction_factors = llm_data.get('correction_factors', [])
             analysis = llm_data.get('analysis', 'Анализ от YandexGPT')
+            confidence = llm_data.get('confidence', 0.5)
+            reasoning = llm_data.get('reasoning', '')
+            sources_used = llm_data.get('sources_used', [])
+            
+            # Валидация коэффициентов
+            correction_factors = self._validate_correction_factors(
+                correction_factors, 
+                len(forecast),
+                has_web_context=bool(web_urls)
+            )
             
             # Применяем коррекцию
             if len(correction_factors) == len(forecast):
@@ -332,6 +693,10 @@ class LLMExpert:
                     'corrected_lower': corrected_lower,
                     'corrected_upper': corrected_upper,
                     'analysis': analysis,
+                    'reasoning': reasoning,
+                    'confidence': confidence,
+                    'sources_used': sources_used,
+                    'correction_factors': correction_factors,
                     'correction_applied': True
                 }
             else:
@@ -341,6 +706,10 @@ class LLMExpert:
                     'corrected_lower': lower_bound,
                     'corrected_upper': upper_bound,
                     'analysis': analysis,
+                    'reasoning': reasoning,
+                    'confidence': confidence,
+                    'sources_used': sources_used,
+                    'correction_factors': [1.0] * len(forecast),
                     'correction_applied': False
                 }
             
@@ -354,6 +723,10 @@ class LLMExpert:
                 'corrected_lower': lower_bound,
                 'corrected_upper': upper_bound,
                 'analysis': self._basic_analysis(historical_data, forecast),
+                'reasoning': f'Ошибка парсинга ответа LLM: {e}',
+                'confidence': 0.0,
+                'sources_used': [],
+                'correction_factors': [1.0] * len(forecast),
                 'correction_applied': False
             }
 
@@ -415,8 +788,10 @@ if __name__ == "__main__":
         result = expert.correct_forecast(historical, forecast, lower, upper)
         
         print(f"\n✅ Результат коррекции:")
-        print(f"   Прогноз: {result['forecast']}")
+        print(f"   Прогноз: {result['corrected_forecast']}")
         print(f"   Анализ: {result['analysis']}")
+        print(f"   Обоснование: {result.get('reasoning', 'N/A')}")
+        print(f"   Уверенность: {result.get('confidence', 'N/A')}")
         print(f"   Коррекция применена: {result['correction_applied']}")
     else:
         print("\n❌ Тест не прошёл")
