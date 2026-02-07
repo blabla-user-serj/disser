@@ -63,10 +63,12 @@ class HybridModel:
         # Формула 2.7: λ = 0.8 для коротких рядов
         self.decay_factor = decay_factor if decay_factor is not None else self.LAMBDA
         
+        # Инициализация весов с приоритетом SARIMA-XS для коротких рядов
+        # SARIMA-XS показывает лучшую устойчивость на экстремально коротких рядах (n=5-20)
         self.weights = {
-            'sarima': 1/3,
-            'xgboost': 1/3,
-            'timellm': 1/3
+            'sarima': 0.5,    # Больший начальный вес для SARIMA-XS
+            'xgboost': 0.3,
+            'timellm': 0.2
         }
         
         self.error_history = {
@@ -276,10 +278,13 @@ class HybridModel:
             for model in ['sarima', 'xgboost', 'timellm']:
                 self.weights[model] = exp_weights[model] / total
         else:
-            # Fallback: равные веса
-            print("⚠️ Сумма весов = 0, используем равные веса")
-            for model in ['sarima', 'xgboost', 'timellm']:
-                self.weights[model] = 1/3
+            # Fallback: веса с приоритетом SARIMA-XS
+            print("⚠️ Сумма весов = 0, используем веса по умолчанию (приоритет SARIMA-XS)")
+            self.weights = {
+                'sarima': 0.5,
+                'xgboost': 0.3,
+                'timellm': 0.2
+            }
         
         # Проверка: минимальный вес не должен быть меньше 0.05
         MIN_WEIGHT = 0.05
