@@ -464,55 +464,7 @@ class LLMExpert:
             facts_str = "; ".join(key_facts[:5])
             prompt += f"\n\nДополнительная информация: {facts_str}"
         
-        # Добавляем веб-контекст если есть
-        if web_context:
-            prompt_parts.extend([
-                "═" * 60,
-                "ВЕБ-КОНТЕКСТ (внешние источники)",
-                "═" * 60,
-                web_context,
-                ""
-            ])
-            
-            # Добавляем извлечённые факты
-            if key_facts:
-                prompt_parts.extend([
-                    "═" * 60,
-                    "ИЗВЛЕЧЁННЫЕ КЛЮЧЕВЫЕ ФАКТЫ:",
-                    "═" * 60
-                ])
-                for i, fact in enumerate(key_facts, 1):
-                    prompt_parts.append(f"  {i}. {fact}")
-                prompt_parts.append("")
-        else:
-            prompt_parts.extend([
-                "═" * 60,
-                "ВЕБ-КОНТЕКСТ: НЕ ПРЕДОСТАВЛЕН",
-                "═" * 60,
-                "Внешние источники отсутствуют.",
-                "Используй ТОЛЬКО статистику исторических данных.",
-                "Применяй КОНСЕРВАТИВНЫЕ коэффициенты (0.95-1.05).",
-                ""
-            ])
-        
-        # Финальная инструкция
-        prompt_parts.extend([
-            "═" * 60,
-            "ЗАДАНИЕ",
-            "═" * 60,
-            f"Верни JSON с РОВНО {len(forecast)} коэффициентами коррекции.",
-            "",
-            "Пример ответа:",
-            "{",
-            f'  "correction_factors": [{", ".join(["1.0"] * len(forecast))}],',
-            '  "confidence": 0.7,',
-            '  "analysis": "На основе [конкретный факт из данных]...",',
-            '  "reasoning": "Коэффициент X.XX применён потому что [цитата из контекста]",',
-            '  "sources_used": ["URL источника или исторические данные"]',
-            "}"
-        ])
-        
-        return "\n".join(prompt_parts)
+        return prompt
 
     def _validate_correction_factors(
         self, 
