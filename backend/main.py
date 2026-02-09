@@ -316,9 +316,69 @@ async def forecast(
             else:
                 raise HTTPException(500, f"Ошибка обучения модели {model_type}: {str(e)}")
         
+        # Генерация дат прогноза с правильной частотой
+        last_date = dates_array[-1]
+        forecast_dates = generate_forecast_dates(last_date, steps, frequency)
+        
+        # LLM-эксперт используется ТОЛЬКО для гибридной модели
+        llm_correction = None  # Δ_LLM для Формулы 2.18
+        correction_factors = None
+        llm_analysis = ""
+        correction_applied = False
+        
+        # LLM-коррекция применяется только для гибридной модели
+        if model_type == 'hybrid':
+            try:
+                llm_expert = LLMExpert()
+                
+                # Парсинг веб-ссылок
+                web_urls_list = []
+                if web_urls:
+                    web_urls_list = [url.strip() for url in web_urls.split('\n') if url.strip()]
+                
+                # Сначала делаем предварительный прогноз для LLM-анализа
+                preliminary_result = model.predict(steps, return_conf_int=True, alpha=0.05)
+                preliminary_forecast = preliminary_result['forecast']
+                preliminary_lower = preliminary_result.get('lower_bound', preliminary_forecast * 0.95)
+                preliminary_upper = preliminary_result.get('upper_bound', preliminary_forecast * 1.05)
+                
+                # LLM анализирует предварительный прогноз
+                correction_result = llm_expert.correct_forecast(
+                    historical_data=values_array,
+                    forecast=preliminary_forecast,
+                    lower_bound=preliminary_lower,
+                    upper_bound=preliminary_upper,
+                    web_urls=web_urls_list
+                )
+                
+                correction_factors = correction_result.get('correction_factors', [1.0] * steps)
+                llm_analysis = correction_result['analysis']
+                correction_applied = correction_result['correction_applied']
+                
+                # Вычисляем Δ_LLM = (corrected - original) для Формулы 2.18
+                if correction_applied:
+                    corrected_forecast_llm = correction_result['corrected_forecast']
+                    llm_correction = corrected_forecast_llm - preliminary_forecast
+                    print(f"\n🧠 LLM коррекция:")
+                    print(f"   Коэффициенты: {correction_factors}")
+                    print(f"   Δ_LLM: {llm_correction}")
+                
+            except Exception as e:
+                print(f"\n⚠️  Ошибка при LLM коррекции: {str(e)}")
+                llm_analysis = f"⚠️ LLM коррекция недоступна: {str(e)}"
+                correction_applied = False
+        else:
+            # Для базовых моделей (SARIMA, XGBoost, TimeLLM) LLM-коррекция не применяется
+            llm_analysis = f"ℹ️ LLM-эксперт не используется для модели {model_type}.\n\n"
+            llm_analysis += "💡 Для получения экспертной коррекции прогноза выберите 'Гибридную модель'."
+        
         # Прогнозирование с доверительными интервалами
         try:
-            result = model.predict(steps, return_conf_int=True, alpha=0.05)
+            # Для гибридной модели передаём Δ_LLM (Формула 2.18)
+            if model_type == 'hybrid' and llm_correction is not None:
+                result = model.predict(steps, return_conf_int=True, alpha=0.05, llm_correction=llm_correction)
+            else:
+                result = model.predict(steps, return_conf_int=True, alpha=0.05)
         except Exception as e:
             print(f"\n❌ Ошибка при прогнозировании модели {model_type}:")
             print(f"   {str(e)}")
@@ -330,42 +390,10 @@ async def forecast(
         lower_bound = result.get('lower_bound', forecast_values * 0.95)
         upper_bound = result.get('upper_bound', forecast_values * 1.05)
         
-        # Генерация дат прогноза с правильной частотой
-        last_date = dates_array[-1]
-        forecast_dates = generate_forecast_dates(last_date, steps, frequency)
-        
-        # LLM коррекция прогноза
-        try:
-            llm_expert = LLMExpert()
-            
-            # Парсинг веб-ссылок
-            web_urls_list = []
-            if web_urls:
-                web_urls_list = [url.strip() for url in web_urls.split('\n') if url.strip()]
-            
-            # Коррекция прогноза
-            correction_result = llm_expert.correct_forecast(
-                historical_data=values_array,
-                forecast=forecast_values,
-                lower_bound=lower_bound,
-                upper_bound=upper_bound,
-                web_urls=web_urls_list
-            )
-            
-            corrected_forecast = correction_result['corrected_forecast']
-            corrected_lower = correction_result['corrected_lower']
-            corrected_upper = correction_result['corrected_upper']
-            llm_analysis = correction_result['analysis']
-            correction_applied = correction_result['correction_applied']
-        except Exception as e:
-            print(f"\n⚠️  Ошибка при LLM коррекции: {str(e)}")
-            print(f"   Используется прогноз без коррекции")
-            # Fallback: используем прогноз без коррекции
-            corrected_forecast = forecast_values
-            corrected_lower = lower_bound
-            corrected_upper = upper_bound
-            llm_analysis = f"⚠️ LLM коррекция недоступна: {str(e)}\n\nИспользуется базовый прогноз модели."
-            correction_applied = False
+        # Для гибридной модели коррекция уже применена в predict()
+        corrected_forecast = forecast_values
+        corrected_lower = lower_bound
+        corrected_upper = upper_bound
         
         # Сохранение для экспорта
         last_forecast_data = {

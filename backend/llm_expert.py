@@ -359,9 +359,29 @@ class LLMExpert:
         """
         Строит системный промпт для анализа данных.
         """
-        return """Ты помощник для анализа числовых данных.
-ОТВЕЧАЙ ТОЛЬКО В ФОРМАТЕ JSON, без пояснений до или после.
-Пример ответа: {"weights": [0.98, 1.02, 1.0], "comment": "причина"}"""
+        base = """Ты эксперт-аналитик по временным рядам. Твоя задача - оценить качество прогноза модели и предложить корректирующие коэффициенты.
+
+ФОРМАТ ОТВЕТА - строго JSON:
+{"weights": [коэффициенты], "comment": "подробное обоснование"}
+
+ДИАПАЗОН КОЭФФИЦИЕНТОВ: от 0.8 до 1.2
+- 0.8-0.9 = прогноз сильно завышен, требуется значительное снижение
+- 0.9-0.95 = прогноз умеренно завышен
+- 0.95-1.0 = прогноз слегка завышен или адекватен
+- 1.0 = прогноз точен, коррекция не требуется
+- 1.0-1.05 = прогноз слегка занижен
+- 1.05-1.1 = прогноз умеренно занижен
+- 1.1-1.2 = прогноз сильно занижен, требуется значительное повышение"""
+
+        if has_web_context:
+            base += """
+
+ВАЖНО: Тебе предоставлен внешний контекст из веб-источников. 
+Обязательно учитывай эту информацию при определении коэффициентов!
+Если контекст указывает на рост - коэффициенты должны быть > 1.0
+Если контекст указывает на снижение - коэффициенты должны быть < 1.0"""
+        
+        return base
     
     def _build_user_prompt(
         self,
@@ -377,66 +397,94 @@ class LLMExpert:
         key_facts: List[str]
     ) -> str:
         """
-        Строит информативный промпт для получения осмысленных коэффициентов.
+        Строит подробный промпт для получения осмысленных коэффициентов.
         """
         n_points = len(forecast)
+        n_hist = len(historical_data)
         last_values = historical_data[-5:].tolist()
         
-        # Вычисляем дополнительную статистику для анализа
+        # Вычисляем статистику
         last_val = float(historical_data[-1])
         first_forecast = float(forecast[0])
+        last_forecast = float(forecast[-1])
         jump_pct = ((first_forecast - last_val) / last_val * 100) if last_val != 0 else 0
+        total_change_pct = ((last_forecast - last_val) / last_val * 100) if last_val != 0 else 0
         
-        # Анализ: прогноз выше или ниже тренда?
-        expected_next = last_val + trend  # Ожидаемое значение по тренду
+        # Анализ тренда
+        expected_next = last_val + trend
         forecast_vs_trend = "выше" if first_forecast > expected_next else "ниже"
+        deviation_from_trend = first_forecast - expected_next
+        deviation_pct = (deviation_from_trend / expected_next * 100) if expected_next != 0 else 0
         
-        # Формируем примеры коэффициентов на основе анализа
-        # Если первое значение выше тренда - предлагаем уменьшить (0.97-0.99)
-        # Если ниже - предлагаем увеличить (1.01-1.03)
-        if first_forecast > expected_next:
-            example_first = 0.98
-            example_reason = "первое значение выше тренда"
-        else:
-            example_first = 1.02
-            example_reason = "первое значение ниже тренда"
+        # Анализ волатильности
+        hist_volatility = std_val / mean_val * 100 if mean_val != 0 else 0
         
-        # Генерируем пример весов
-        example_weights = [round(example_first + 0.01 * i, 2) for i in range(n_points)]
-        
-        # Формируем промпт с КОНКРЕТНЫМ примером
-        prompt = f"""Данные для анализа:
-- Последние значения: {last_values}
-- Тренд: {trend:+.2f} ({trend_direction})
-- Последнее: {last_val:.2f}, ожидаемое по тренду: {expected_next:.2f}
+        # Формируем подробный промпт
+        prompt = f"""═══════════════════════════════════════════════════════════════
+ЗАДАЧА: Оценить прогноз модели и выдать корректирующие коэффициенты
+═══════════════════════════════════════════════════════════════
 
-Модельные значения: {forecast.tolist()}
+📊 ИСТОРИЧЕСКИЕ ДАННЫЕ ({n_hist} наблюдений):
+   • Последние 5 значений: {last_values}
+   • Среднее: {mean_val:.2f}
+   • Стд. отклонение: {std_val:.2f}
+   • Волатильность: {hist_volatility:.1f}%
+   • Последнее значение: {last_val:.2f}
 
-Первое значение ({first_forecast:.2f}) {forecast_vs_trend} ожидаемого ({expected_next:.2f}), скачок {jump_pct:+.1f}%.
+📈 ТРЕНД:
+   • Направление: {trend_direction}
+   • Коэффициент: {trend:+.4f} за период
+   • Ожидаемое следующее по тренду: {expected_next:.2f}
 
-Выдай {n_points} коэффициентов (0.95-1.05): завышено=0.97, норма=1.0, занижено=1.03
+🔮 ПРОГНОЗ МОДЕЛИ ({n_points} точек):
+   • Значения: {[round(f, 2) for f in forecast.tolist()]}
+   • Первое значение: {first_forecast:.2f}
+   • Последнее значение: {last_forecast:.2f}
+   • Скачок от истории: {jump_pct:+.1f}%
+   • Общее изменение: {total_change_pct:+.1f}%
 
-Пример ответа:
-{{"weights": {example_weights}, "comment": "{example_reason}"}}
+⚠️ АНАЛИЗ ОТКЛОНЕНИЙ:
+   • Прогноз {forecast_vs_trend} ожидаемого по тренду на {abs(deviation_pct):.1f}%
+   • Отклонение: {deviation_from_trend:+.2f}"""
 
-Твой ответ (ТОЛЬКО JSON):"""
-
-        # Добавляем внешний контекст если есть
-        if web_context and key_facts:
-            facts_str = "; ".join(key_facts[:5])
+        # Добавляем внешний контекст если есть - ЭТО КЛЮЧЕВАЯ ЧАСТЬ
+        if key_facts and len(key_facts) > 0:
             prompt += f"""
 
-ДОПОЛНИТЕЛЬНАЯ ИНФОРМАЦИЯ:
-{facts_str}
+🌐 ВНЕШНИЙ КОНТЕКСТ (ОБЯЗАТЕЛЬНО УЧИТЫВАТЬ!):
+"""
+            for i, fact in enumerate(key_facts[:7], 1):
+                # Ограничиваем длину факта
+                fact_text = fact[:200] + "..." if len(fact) > 200 else fact
+                prompt += f"   {i}. {fact_text}\n"
+            
+            prompt += """
+   ⚡ ВАЖНО: Используй информацию из контекста для корректировки!
+   Если источники указывают на рост/снижение - учти это в коэффициентах."""
 
-При наличии информации о росте/падении учти её в коэффициентах (диапазон 0.9-1.1)."""
+        # Инструкции по выдаче коэффициентов
+        prompt += f"""
+
+═══════════════════════════════════════════════════════════════
+ТВОЯ ЗАДАЧА:
+═══════════════════════════════════════════════════════════════
+
+Выдай {n_points} корректирующих коэффициентов (от 0.8 до 1.2):
+
+1. Проанализируй соответствие прогноза историческому тренду
+2. Оцени реалистичность скачка {jump_pct:+.1f}% от последнего значения
+3. {"Учти информацию из внешнего контекста!" if key_facts else "Внешний контекст не предоставлен - опирайся на статистику."}
+4. Для каждой точки определи: завышена, занижена или адекватна
+
+ОТВЕТ (строго JSON, без дополнительного текста):
+{{"weights": [{', '.join(['<0.8-1.2>' for _ in range(n_points)])}], "comment": "<подробное обоснование каждого коэффициента>"}}"""
         
         return prompt
 
     def _extract_coefficients_from_text(self, text: str, expected_count: int) -> List[float]:
         """
         Извлекает коэффициенты из текстового ответа LLM.
-        Ищет числа в диапазоне 0.9-1.1 или слова-маркеры (завышено/занижено).
+        Ищет числа в диапазоне 0.8-1.2 или слова-маркеры (завышено/занижено).
         
         Args:
             text: текстовый ответ LLM
@@ -455,7 +503,7 @@ class LLMExpert:
             for num in numbers:
                 try:
                     val = float(num)
-                    if 0.8 <= val <= 1.2:
+                    if 0.7 <= val <= 1.3:  # Расширенный диапазон для поиска
                         coefficients.append(val)
                 except ValueError:
                     continue
@@ -463,12 +511,12 @@ class LLMExpert:
             if len(coefficients) == expected_count:
                 return coefficients
         
-        # 2. Ищем числа типа 0.97, 1.02 в тексте
+        # 2. Ищем числа типа 0.85, 1.15 в тексте
         decimal_numbers = re.findall(r'(?:^|[^\d])(\d\.\d{1,2})(?:[^\d]|$)', text)
         for num in decimal_numbers:
             try:
                 val = float(num)
-                if 0.9 <= val <= 1.1:
+                if 0.8 <= val <= 1.2:  # Диапазон 0.8-1.2
                     coefficients.append(val)
             except ValueError:
                 continue
@@ -480,17 +528,29 @@ class LLMExpert:
         coefficients = []
         text_lower = text.lower()
         
-        # Паттерны для каждой точки
+        # Паттерны для каждой точки (расширенный диапазон 0.8-1.2)
         patterns = {
-            'завышен': 0.97,
-            'выше': 0.97,
-            'переоценен': 0.97,
-            'занижен': 1.03,
-            'ниже': 1.03,
-            'недооценен': 1.03,
+            # Сильное завышение
+            'сильно завышен': 0.85,
+            'значительно завышен': 0.85,
+            'существенно завышен': 0.85,
+            # Умеренное завышение
+            'завышен': 0.92,
+            'выше': 0.95,
+            'переоценен': 0.92,
+            # Норма
             'адекватн': 1.0,
             'норм': 1.0,
             'соответств': 1.0,
+            'точн': 1.0,
+            # Умеренное занижение
+            'занижен': 1.08,
+            'ниже': 1.05,
+            'недооценен': 1.08,
+            # Сильное занижение
+            'сильно занижен': 1.15,
+            'значительно занижен': 1.15,
+            'существенно занижен': 1.15,
         }
         
         # Ищем упоминания для каждой точки
@@ -502,8 +562,9 @@ class LLMExpert:
                 # Ищем контекст вокруг маркера
                 marker_pos = text_lower.find(marker.lower())
                 if marker_pos != -1:
-                    context = text_lower[marker_pos:marker_pos+100]
-                    for pattern, value in patterns.items():
+                    context = text_lower[marker_pos:marker_pos+150]
+                    # Сначала проверяем длинные паттерны (более специфичные)
+                    for pattern, value in sorted(patterns.items(), key=lambda x: -len(x[0])):
                         if pattern in context:
                             coef = value
                             break
@@ -534,11 +595,9 @@ class LLMExpert:
         Returns:
             Валидированный список коэффициентов
         """
-        # Определяем допустимый диапазон
-        if has_web_context:
-            min_factor, max_factor = 0.7, 1.3  # ±30% с контекстом
-        else:
-            min_factor, max_factor = 0.95, 1.05  # ±5% без контекста
+        # Определяем допустимый диапазон - всегда 0.8-1.2 (±20%)
+        # Расширенный диапазон позволяет учитывать внешний контекст и тренды
+        min_factor, max_factor = 0.8, 1.2
         
         validated = []
         
@@ -702,11 +761,17 @@ class LLMExpert:
                 
                 print(f"✅ Коррекция применена: {correction_factors}")
                 
+                # Генерируем подробный анализ
+                detailed_analysis = self._generate_detailed_analysis(
+                    historical_data, corrected_forecast, correction_factors, True,
+                    web_context="", key_facts=key_facts
+                )
+                
                 return {
                     'corrected_forecast': corrected_forecast,
                     'corrected_lower': corrected_lower,
                     'corrected_upper': corrected_upper,
-                    'analysis': analysis,
+                    'analysis': detailed_analysis,
                     'reasoning': reasoning,
                     'confidence': confidence,
                     'sources_used': sources_used,
@@ -715,11 +780,14 @@ class LLMExpert:
                 }
             else:
                 print(f"⚠️  Несоответствие длин: {len(correction_factors)} != {len(forecast)}")
+                detailed_analysis = self._generate_detailed_analysis(
+                    historical_data, forecast, [1.0] * len(forecast), False
+                )
                 return {
                     'corrected_forecast': forecast,
                     'corrected_lower': lower_bound,
                     'corrected_upper': upper_bound,
-                    'analysis': analysis,
+                    'analysis': detailed_analysis,
                     'reasoning': reasoning,
                     'confidence': confidence,
                     'sources_used': sources_used,
@@ -740,11 +808,16 @@ class LLMExpert:
                 corrected_lower = lower_bound * np.array(correction_factors)
                 corrected_upper = upper_bound * np.array(correction_factors)
                 
+                # Генерируем подробный анализ
+                detailed_analysis = self._generate_detailed_analysis(
+                    historical_data, corrected_forecast, correction_factors, True
+                )
+                
                 return {
                     'corrected_forecast': corrected_forecast,
                     'corrected_lower': corrected_lower,
                     'corrected_upper': corrected_upper,
-                    'analysis': llm_response[:500],  # Используем текст как анализ
+                    'analysis': detailed_analysis,
                     'reasoning': 'Коэффициенты извлечены из текстового ответа',
                     'confidence': 0.3,
                     'sources_used': [],
@@ -767,14 +840,123 @@ class LLMExpert:
 
     def _basic_analysis(self, historical_data: np.ndarray, forecast: np.ndarray) -> str:
         """Базовый статистический анализ без LLM"""
+        return self._generate_detailed_analysis(historical_data, forecast, [1.0] * len(forecast), False)
+    
+    def _generate_detailed_analysis(
+        self, 
+        historical_data: np.ndarray, 
+        forecast: np.ndarray, 
+        correction_factors: List[float],
+        correction_applied: bool,
+        web_context: str = "",
+        key_facts: List[str] = None
+    ) -> str:
+        """
+        Генерирует подробный анализ прогноза с коррекцией.
+        
+        Включает:
+        - Статистику исторических данных
+        - Анализ тренда
+        - Оценку прогноза
+        - Применённую коррекцию
+        - Информацию из веб-источников (если есть)
+        """
+        n = len(historical_data)
+        h = len(forecast)
+        
+        # Статистика
         mean_hist = np.mean(historical_data)
+        std_hist = np.std(historical_data)
+        min_hist = np.min(historical_data)
+        max_hist = np.max(historical_data)
+        last_val = float(historical_data[-1])
+        
+        # Тренд
+        if n >= 3:
+            trend_coef = np.polyfit(range(n), historical_data, 1)[0]
+            trend_direction = "восходящий" if trend_coef > 0 else "нисходящий"
+            trend_strength = abs(trend_coef) / std_hist if std_hist > 0 else 0
+            trend_desc = "сильный" if trend_strength > 0.5 else "умеренный" if trend_strength > 0.2 else "слабый"
+        else:
+            trend_direction = "неопределённый"
+            trend_desc = ""
+            trend_coef = 0
+        
+        # Анализ прогноза
         mean_forecast = np.mean(forecast)
-        
-        trend = "растёт" if mean_forecast > mean_hist else "падает"
         change_pct = ((mean_forecast - mean_hist) / mean_hist * 100) if mean_hist != 0 else 0
+        first_jump = ((forecast[0] - last_val) / last_val * 100) if last_val != 0 else 0
         
-        return f"Прогноз {trend} на {abs(change_pct):.1f}% относительно исторического среднего. " \
-               f"Среднее историческое: {mean_hist:.2f}, среднее прогноза: {mean_forecast:.2f}."
+        # Формируем текст анализа
+        lines = []
+        lines.append("=" * 50)
+        lines.append("📊 АНАЛИЗ ПРОГНОЗА")
+        lines.append("=" * 50)
+        
+        # Раздел 1: Исторические данные
+        lines.append(f"\n📈 ИСТОРИЧЕСКИЕ ДАННЫЕ (n={n}):")
+        lines.append(f"   • Период: {n} наблюдений")
+        lines.append(f"   • Среднее: {mean_hist:.2f}")
+        lines.append(f"   • Стд. откл.: {std_hist:.2f}")
+        lines.append(f"   • Диапазон: [{min_hist:.2f}, {max_hist:.2f}]")
+        lines.append(f"   • Последнее значение: {last_val:.2f}")
+        
+        # Раздел 2: Тренд
+        lines.append(f"\n📉 ТРЕНД:")
+        lines.append(f"   • Направление: {trend_desc} {trend_direction}")
+        lines.append(f"   • Коэффициент: {trend_coef:+.4f} за период")
+        if trend_coef != 0:
+            expected_next = last_val + trend_coef
+            lines.append(f"   • Ожидаемое по тренду: {expected_next:.2f}")
+        
+        # Раздел 3: Прогноз
+        lines.append(f"\n🔮 ПРОГНОЗ (h={h}):")
+        lines.append(f"   • Значения: {[round(f, 2) for f in forecast.tolist()]}")
+        lines.append(f"   • Среднее прогноза: {mean_forecast:.2f}")
+        lines.append(f"   • Изменение от истории: {change_pct:+.1f}%")
+        lines.append(f"   • Скачок от последнего: {first_jump:+.1f}%")
+        
+        # Раздел 4: LLM коррекция
+        lines.append(f"\n🤖 LLM-КОРРЕКЦИЯ:")
+        if correction_applied and any(f != 1.0 for f in correction_factors):
+            lines.append(f"   • Статус: ✅ Применена")
+            lines.append(f"   • Коэффициенты: {[round(f, 3) for f in correction_factors]}")
+            
+            # Интерпретация коэффициентов
+            interpretations = []
+            for i, f in enumerate(correction_factors):
+                if f < 0.99:
+                    interpretations.append(f"точка {i+1}: снижение на {(1-f)*100:.1f}%")
+                elif f > 1.01:
+                    interpretations.append(f"точка {i+1}: повышение на {(f-1)*100:.1f}%")
+            
+            if interpretations:
+                lines.append(f"   • Корректировки: {'; '.join(interpretations)}")
+        else:
+            lines.append(f"   • Статус: ⚠️ Не применена (коэффициенты = 1.0)")
+            lines.append(f"   • Причина: модель считает прогноз адекватным")
+        
+        # Раздел 5: Веб-контекст (если есть)
+        if key_facts:
+            lines.append(f"\n🌐 ВНЕШНИЙ КОНТЕКСТ:")
+            for i, fact in enumerate(key_facts[:3], 1):
+                lines.append(f"   {i}. {fact[:100]}...")
+        
+        # Раздел 6: Рекомендации
+        lines.append(f"\n💡 ИНТЕРПРЕТАЦИЯ:")
+        if abs(first_jump) > 10:
+            lines.append(f"   ⚠️ Значительный скачок ({first_jump:+.1f}%) от последнего значения")
+        
+        if change_pct > 20:
+            lines.append(f"   📈 Прогноз существенно выше исторического уровня")
+        elif change_pct < -20:
+            lines.append(f"   📉 Прогноз существенно ниже исторического уровня")
+        else:
+            lines.append(f"   ✅ Прогноз в пределах исторической динамики")
+        
+        lines.append("=" * 50)
+        
+        return "\n".join(lines)
 
 
 # Пример использования
