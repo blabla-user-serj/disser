@@ -1,10 +1,43 @@
 import numpy as np
 import pandas as pd
+import math
 from xgboost import XGBRegressor
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
+
+
+def sanitize_array(arr, fallback_value=0.0):
+    """
+    Очистка массива от NaN и Inf значений для JSON сериализации.
+    
+    Args:
+        arr: numpy array или list для очистки
+        fallback_value: значение для замены NaN/Inf
+        
+    Returns:
+        Очищенный numpy array без NaN и Inf
+    """
+    arr = np.array(arr, dtype=float)
+    
+    # Находим валидные значения для вычисления fallback
+    valid_mask = np.isfinite(arr)
+    
+    if valid_mask.any():
+        # Используем среднее валидных значений или последнее валидное
+        valid_values = arr[valid_mask]
+        computed_fallback = np.mean(valid_values)
+    else:
+        computed_fallback = fallback_value
+    
+    # Заменяем NaN на fallback
+    arr = np.where(np.isnan(arr), computed_fallback, arr)
+    
+    # Заменяем Inf/-Inf на fallback
+    arr = np.where(np.isinf(arr), computed_fallback, arr)
+    
+    return arr
 
 class XGBoostTS:
     """XGBoost для временных рядов с автоматическим подбором параметров"""
@@ -204,14 +237,6 @@ class XGBoostTS:
             mae = np.mean(np.abs(test_data - np.array(predictions)))
 
             return mae
-
-        except Exception as e:
-            print(f"Ошибка при оценке параметров {params}: {e}")
-            # Consider logging traceback for deeper debugging
-            # import traceback
-            # traceback.print_exc()
-            return None
-
 
         except Exception as e:
             print(f"Ошибка при оценке параметров {params}: {e}")
@@ -467,11 +492,19 @@ class XGBoostTS:
             # Добавляем прогноз к текущим данным
             current_data.append(pred)
 
-        result = {'forecast': np.array(forecast)}
+        # Очистка прогноза от NaN/Inf
+        last_value = float(self.data[-1]) if self.data is not None and len(self.data) > 0 else 0.0
+        forecast_clean = sanitize_array(forecast, fallback_value=last_value)
+        
+        result = {'forecast': forecast_clean}
 
         if return_conf_int:
-            result['lower_bound'] = np.array(lower_bounds)
-            result['upper_bound'] = np.array(upper_bounds)
+            lower_clean = sanitize_array(lower_bounds, fallback_value=forecast_clean[0] * 0.9)
+            upper_clean = sanitize_array(upper_bounds, fallback_value=forecast_clean[0] * 1.1)
+            
+            # Гарантируем, что lower <= forecast <= upper
+            result['lower_bound'] = np.minimum(lower_clean, forecast_clean)
+            result['upper_bound'] = np.maximum(upper_clean, forecast_clean)
 
         return result
 

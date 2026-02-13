@@ -13,11 +13,44 @@
 """
 import numpy as np
 import gc
+import math
 import torch
 from scipy import stats
 from .sarima_xs import SARIMAXS
 from .xgboost_model import XGBoostTS
 from .timellm_gguf import TimeLLM, clear_gpu_memory_completely
+
+
+def sanitize_array(arr, fallback_value=0.0):
+    """
+    Очистка массива от NaN и Inf значений для JSON сериализации.
+    
+    Args:
+        arr: numpy array или list для очистки
+        fallback_value: значение для замены NaN/Inf
+        
+    Returns:
+        Очищенный numpy array без NaN и Inf
+    """
+    arr = np.array(arr, dtype=float)
+    
+    # Находим валидные значения для вычисления fallback
+    valid_mask = np.isfinite(arr)
+    
+    if valid_mask.any():
+        # Используем среднее валидных значений или последнее валидное
+        valid_values = arr[valid_mask]
+        computed_fallback = np.mean(valid_values)
+    else:
+        computed_fallback = fallback_value
+    
+    # Заменяем NaN на fallback
+    arr = np.where(np.isnan(arr), computed_fallback, arr)
+    
+    # Заменяем Inf/-Inf на fallback
+    arr = np.where(np.isinf(arr), computed_fallback, arr)
+    
+    return arr
 
 
 class HybridModel:
@@ -600,12 +633,20 @@ class HybridModel:
         print(f"   w_LLM × Δ_LLM: {(w_llm * delta_llm)[:3]}...")
         print(f"   Ŷ_final: {final_forecast[:3]}...")
         
+        # Fallback значение на основе последних данных
+        last_value = float(self.data[-1]) if self.data is not None and len(self.data) > 0 else 0.0
+        
+        # Очистка финального прогноза от NaN/Inf
+        final_forecast = sanitize_array(final_forecast, fallback_value=last_value)
+        ensemble_forecast = sanitize_array(ensemble_forecast, fallback_value=last_value)
+        bias_corrections = sanitize_array(bias_corrections, fallback_value=0.0)
+        
         result = {
             'forecast': final_forecast,
             'ensemble_forecast': ensemble_forecast,
             'bias_correction': bias_corrections,
             'llm_weight': w_llm,
-            'llm_correction': w_llm * delta_llm,
+            'llm_correction': sanitize_array(w_llm * delta_llm, fallback_value=0.0),
             'weights': self.weights.copy(),
             'individual_forecasts': forecasts
         }
@@ -625,8 +666,16 @@ class HybridModel:
             )
             
             # Добавляем Δ_bias к доверительным интервалам
-            result['lower_bound'] = hybrid_lower + bias_corrections
-            result['upper_bound'] = hybrid_upper + bias_corrections
+            lower = hybrid_lower + bias_corrections
+            upper = hybrid_upper + bias_corrections
+            
+            # Очистка доверительных интервалов от NaN/Inf
+            result['lower_bound'] = sanitize_array(lower, fallback_value=final_forecast[0] * 0.9)
+            result['upper_bound'] = sanitize_array(upper, fallback_value=final_forecast[0] * 1.1)
+            
+            # Гарантируем, что lower <= forecast <= upper
+            result['lower_bound'] = np.minimum(result['lower_bound'], final_forecast)
+            result['upper_bound'] = np.maximum(result['upper_bound'], final_forecast)
         
         return result
     
