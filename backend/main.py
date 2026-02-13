@@ -18,9 +18,61 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import pandas as pd
 import numpy as np
+import math
 from io import BytesIO, StringIO
 from datetime import datetime, timedelta
 import json
+
+
+def sanitize_for_json(value):
+    """
+    Очистка значения для JSON сериализации.
+    Заменяет NaN, Inf, -Inf на None или 0.
+    """
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return 0.0
+        return value
+    elif isinstance(value, (np.floating, np.float64, np.float32)):
+        if np.isnan(value) or np.isinf(value):
+            return 0.0
+        return float(value)
+    elif isinstance(value, np.ndarray):
+        return sanitize_array(value).tolist()
+    elif isinstance(value, list):
+        return [sanitize_for_json(v) for v in value]
+    elif isinstance(value, dict):
+        return {k: sanitize_for_json(v) for k, v in value.items()}
+    return value
+
+
+def sanitize_array(arr, fallback_value=0.0):
+    """
+    Очистка массива от NaN и Inf значений для JSON сериализации.
+    
+    Args:
+        arr: numpy array или list для очистки
+        fallback_value: значение для замены NaN/Inf
+        
+    Returns:
+        Очищенный numpy array без NaN и Inf
+    """
+    arr = np.array(arr, dtype=float)
+    
+    # Находим валидные значения для вычисления fallback
+    valid_mask = np.isfinite(arr)
+    
+    if valid_mask.any():
+        valid_values = arr[valid_mask]
+        computed_fallback = np.mean(valid_values)
+    else:
+        computed_fallback = fallback_value
+    
+    # Заменяем NaN и Inf на fallback
+    arr = np.where(np.isnan(arr), computed_fallback, arr)
+    arr = np.where(np.isinf(arr), computed_fallback, arr)
+    
+    return arr
 
 from models import SARIMAXS, XGBoostTS, TimeLLM, HybridModel
 from models.timellm_gguf import destroy_all_models, clear_gpu_memory_completely
@@ -444,11 +496,33 @@ async def forecast(
         # Веса (для гибридной модели)
         weights = model_info.get('weights', {}) if model_type == 'hybrid' else {}
         
+        # Финальная очистка всех числовых значений для JSON
+        last_value = float(values_array[-1]) if len(values_array) > 0 else 0.0
+        
+        corrected_forecast = sanitize_array(corrected_forecast, fallback_value=last_value)
+        corrected_lower = sanitize_array(corrected_lower, fallback_value=corrected_forecast[0] * 0.9 if len(corrected_forecast) > 0 else last_value * 0.9)
+        corrected_upper = sanitize_array(corrected_upper, fallback_value=corrected_forecast[0] * 1.1 if len(corrected_forecast) > 0 else last_value * 1.1)
+        
+        # Гарантируем, что lower <= forecast <= upper
+        corrected_lower = np.minimum(corrected_lower, corrected_forecast)
+        corrected_upper = np.maximum(corrected_upper, corrected_forecast)
+        
+        # Очищаем метрики
+        clean_metrics = {
+            "MAE": sanitize_for_json(float(metrics['MAE'])),
+            "RMSE": sanitize_for_json(float(metrics['RMSE'])),
+            "R2": sanitize_for_json(float(metrics['R2']))
+        }
+        
+        # Очищаем model_info
+        clean_model_info = sanitize_for_json(model_info)
+        clean_weights = sanitize_for_json(weights)
+        
         return {
             "status": "success",
             "historical": {
                 "dates": dates_array.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-                "values": values_array.tolist()
+                "values": sanitize_array(values_array).tolist()
             },
             "forecast": {
                 "dates": forecast_dates.strftime('%Y-%m-%d %H:%M:%S').tolist(),
@@ -457,15 +531,11 @@ async def forecast(
                 "upper_bound": corrected_upper.tolist()
             },
             "frequency": frequency,
-            "metrics": {
-                "MAE": float(metrics['MAE']),
-                "RMSE": float(metrics['RMSE']),
-                "R2": float(metrics['R2'])
-            },
+            "metrics": clean_metrics,
             "llm_analysis": llm_analysis,
             "correction_applied": correction_applied,
-            "weights": weights,
-            "model_info": model_info
+            "weights": clean_weights,
+            "model_info": clean_model_info
         }
         
     except Exception as e:

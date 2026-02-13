@@ -4,10 +4,43 @@ SARIMA-XS модель с адаптивными ограничениями, д�
 """
 import numpy as np
 import pandas as pd
+import math
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.stattools import adfuller
 import warnings
 warnings.filterwarnings('ignore')
+
+
+def sanitize_array(arr, fallback_value=0.0):
+    """
+    Очистка массива от NaN и Inf значений для JSON сериализации.
+    
+    Args:
+        arr: numpy array или list для очистки
+        fallback_value: значение для замены NaN/Inf
+        
+    Returns:
+        Очищенный numpy array без NaN и Inf
+    """
+    arr = np.array(arr, dtype=float)
+    
+    # Находим валидные значения для вычисления fallback
+    valid_mask = np.isfinite(arr)
+    
+    if valid_mask.any():
+        # Используем среднее валидных значений или последнее валидное
+        valid_values = arr[valid_mask]
+        computed_fallback = np.mean(valid_values)
+    else:
+        computed_fallback = fallback_value
+    
+    # Заменяем NaN на fallback
+    arr = np.where(np.isnan(arr), computed_fallback, arr)
+    
+    # Заменяем Inf/-Inf на fallback
+    arr = np.where(np.isinf(arr), computed_fallback, arr)
+    
+    return arr
 
 
 class SARIMAXS:
@@ -332,6 +365,12 @@ class SARIMAXS:
         forecast_result = self.fitted_model.get_forecast(steps=steps)
         forecast = forecast_result.predicted_mean
         
+        # Fallback значение на основе последних данных
+        last_value = float(self.data[-1]) if self.data is not None and len(self.data) > 0 else 0.0
+        
+        # Очистка прогноза от NaN/Inf
+        forecast = sanitize_array(forecast, fallback_value=last_value)
+        
         result = {'forecast': forecast}
         
         if return_conf_int:
@@ -339,11 +378,20 @@ class SARIMAXS:
             conf_int = forecast_result.conf_int(alpha=alpha)
             # conf_int может быть DataFrame или ndarray
             if hasattr(conf_int, 'iloc'):
-                result['lower_bound'] = conf_int.iloc[:, 0].values
-                result['upper_bound'] = conf_int.iloc[:, 1].values
+                lower = conf_int.iloc[:, 0].values
+                upper = conf_int.iloc[:, 1].values
             else:
-                result['lower_bound'] = conf_int[:, 0]
-                result['upper_bound'] = conf_int[:, 1]
+                lower = conf_int[:, 0]
+                upper = conf_int[:, 1]
+            
+            # Очистка доверительных интервалов от NaN/Inf
+            # Используем прогноз как базу для fallback
+            result['lower_bound'] = sanitize_array(lower, fallback_value=forecast[0] * 0.9)
+            result['upper_bound'] = sanitize_array(upper, fallback_value=forecast[0] * 1.1)
+            
+            # Гарантируем, что lower <= forecast <= upper
+            result['lower_bound'] = np.minimum(result['lower_bound'], forecast)
+            result['upper_bound'] = np.maximum(result['upper_bound'], forecast)
         
         return result
     

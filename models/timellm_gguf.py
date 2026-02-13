@@ -9,7 +9,40 @@ import warnings
 import os
 import gc
 import sys
+import math
 import weakref
+
+
+def sanitize_array(arr, fallback_value=0.0):
+    """
+    Очистка массива от NaN и Inf значений для JSON сериализации.
+    
+    Args:
+        arr: numpy array или list для очистки
+        fallback_value: значение для замены NaN/Inf
+        
+    Returns:
+        Очищенный numpy array без NaN и Inf
+    """
+    arr = np.array(arr, dtype=float)
+    
+    # Находим валидные значения для вычисления fallback
+    valid_mask = np.isfinite(arr)
+    
+    if valid_mask.any():
+        # Используем среднее валидных значений или последнее валидное
+        valid_values = arr[valid_mask]
+        computed_fallback = np.mean(valid_values)
+    else:
+        computed_fallback = fallback_value
+    
+    # Заменяем NaN на fallback
+    arr = np.where(np.isnan(arr), computed_fallback, arr)
+    
+    # Заменяем Inf/-Inf на fallback
+    arr = np.where(np.isinf(arr), computed_fallback, arr)
+    
+    return arr
 
 # Настройки CUDA для стабильной работы
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512,expandable_segments:True"
@@ -951,6 +984,12 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
         else:
             forecast = self._simple_forecast(self.data, steps)
         
+        # Fallback значение на основе последних данных
+        last_value = float(self.data[-1]) if self.data is not None and len(self.data) > 0 else 0.0
+        
+        # Очистка прогноза от NaN/Inf
+        forecast = sanitize_array(forecast, fallback_value=last_value)
+        
         result = {'forecast': forecast}
         
         # Доверительные интервалы
@@ -960,8 +999,16 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             z_score = stats.norm.ppf(1 - alpha/2)
             
             margin = z_score * std_residual
-            result['lower_bound'] = forecast - margin
-            result['upper_bound'] = forecast + margin
+            lower = forecast - margin
+            upper = forecast + margin
+            
+            # Очистка доверительных интервалов от NaN/Inf
+            result['lower_bound'] = sanitize_array(lower, fallback_value=forecast[0] * 0.9)
+            result['upper_bound'] = sanitize_array(upper, fallback_value=forecast[0] * 1.1)
+            
+            # Гарантируем, что lower <= forecast <= upper
+            result['lower_bound'] = np.minimum(result['lower_bound'], forecast)
+            result['upper_bound'] = np.maximum(result['upper_bound'], forecast)
         
         return result
     
