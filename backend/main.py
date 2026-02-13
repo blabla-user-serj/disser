@@ -386,7 +386,10 @@ async def forecast(
             traceback.print_exc()
             raise HTTPException(500, f"Ошибка прогнозирования модели {model_type}: {str(e)}")
         
+
         forecast_values = result['forecast']
+        forecast_values = np.round(forecast_values, decimals = 3)
+        print(forecast_values)
         lower_bound = result.get('lower_bound', forecast_values * 0.95)
         upper_bound = result.get('upper_bound', forecast_values * 1.05)
         
