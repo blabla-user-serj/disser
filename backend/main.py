@@ -22,6 +22,7 @@ import math
 from io import BytesIO, StringIO
 from datetime import datetime, timedelta
 import json
+import re
 
 
 def sanitize_for_json(value):
@@ -158,6 +159,214 @@ def generate_forecast_dates(last_date: datetime, steps: int, frequency: str) -> 
         return pd.date_range(start=last_date + timedelta(days=1), periods=steps, freq='D')
 
 
+# Словарь для русских названий месяцев
+RUSSIAN_MONTHS = {
+    'январь': 1, 'января': 1, 'янв': 1,
+    'февраль': 2, 'февраля': 2, 'фев': 2,
+    'март': 3, 'марта': 3, 'мар': 3,
+    'апрель': 4, 'апреля': 4, 'апр': 4,
+    'май': 5, 'мая': 5,
+    'июнь': 6, 'июня': 6, 'июн': 6,
+    'июль': 7, 'июля': 7, 'июл': 7,
+    'август': 8, 'августа': 8, 'авг': 8,
+    'сентябрь': 9, 'сентября': 9, 'сен': 9,
+    'октябрь': 10, 'октября': 10, 'окт': 10,
+    'ноябрь': 11, 'ноября': 11, 'ноя': 11,
+    'декабрь': 12, 'декабря': 12, 'дек': 12
+}
+
+
+def parse_russian_date(date_str):
+    """
+    Парсинг даты с русскими названиями месяцев.
+    Поддерживаемые форматы:
+    - "январь 2023", "янв 2023"
+    - "01 января 2023", "1 янв 2023"
+    - "2023 январь", "2023 янв"
+    """
+    if pd.isna(date_str):
+        return pd.NaT
+    
+    date_str = str(date_str).lower().strip()
+    
+    # Ищем русский месяц
+    for month_name, month_num in RUSSIAN_MONTHS.items():
+        if month_name in date_str:
+            # Извлекаем год (4 цифры)
+            import re
+            year_match = re.search(r'\b(19\d{2}|20\d{2})\b', date_str)
+            if year_match:
+                year = int(year_match.group(1))
+                
+                # Извлекаем день (1-2 цифры, не год)
+                day_match = re.search(r'\b([1-9]|[12]\d|3[01])\b(?!\d)', date_str)
+                day = int(day_match.group(1)) if day_match else 1
+                
+                try:
+                    return pd.Timestamp(year=year, month=month_num, day=day)
+                except:
+                    return pd.NaT
+    
+    return None  # Не русская дата
+
+
+def parse_excel_serial_date(value):
+    """
+    Парсинг Excel serial date (числовые даты).
+    Excel serial date: количество дней с 30.12.1899
+    """
+    if pd.isna(value):
+        return pd.NaT
+    
+    try:
+        # Если это число в диапазоне Excel дат (примерно 1900-2100)
+        num_value = float(value)
+        if 1 <= num_value <= 100000:  # Диапазон Excel дат
+            # Excel serial date конвертация
+            return pd.Timestamp('1899-12-30') + pd.Timedelta(days=num_value)
+    except (ValueError, TypeError):
+        pass
+    
+    return None
+
+
+def smart_parse_date(value):
+    """
+    Умный парсинг даты с поддержкой различных форматов.
+    Приоритет:
+    1. Русские даты (январь 2023)
+    2. Excel serial dates (44927)
+    3. Стандартные форматы pandas
+    """
+    if pd.isna(value):
+        return pd.NaT
+    
+    # Попробуем русскую дату
+    result = parse_russian_date(value)
+    if result is not None:
+        return result
+    
+    # Попробуем Excel serial date
+    result = parse_excel_serial_date(value)
+    if result is not None:
+        return result
+    
+    # Стандартный pandas парсинг
+    try:
+        return pd.to_datetime(value)
+    except:
+        return pd.NaT
+
+
+def smart_parse_numeric(value):
+    """
+    Умный парсинг числовых значений.
+    Поддержка:
+    - Запятая как десятичный разделитель (10,5 -> 10.5)
+    - Пробелы как разделители тысяч (1 000 -> 1000)
+    - Проценты (20% -> 20)
+    """
+    if pd.isna(value):
+        return np.nan
+    
+    # Уже число
+    if isinstance(value, (int, float)):
+        return float(value)
+    
+    # Строка
+    str_value = str(value).strip()
+    
+    # Удаляем проценты
+    str_value = str_value.replace('%', '')
+    
+    # Удаляем пробелы (разделители тысяч)
+    str_value = str_value.replace(' ', '').replace('\u00a0', '')  # включая неразрывный пробел
+    
+    # Заменяем запятую на точку (русская локаль)
+    str_value = str_value.replace(',', '.')
+    
+    try:
+        return float(str_value)
+    except ValueError:
+        return np.nan
+
+
+def find_date_column(df):
+    """
+    Автоматическое определение колонки с датами.
+    Пробует разные колонки и проверяет успешность парсинга.
+    """
+    date_keywords = ['дата', 'date', 'время', 'time', 'period', 'период', 'год', 'year', 'месяц', 'month']
+    
+    # Сначала ищем по ключевым словам в названии
+    for col in df.columns:
+        col_lower = str(col).lower()
+        for keyword in date_keywords:
+            if keyword in col_lower:
+                # Проверяем, что хотя бы одно значение парсится
+                test_value = smart_parse_date(df[col].iloc[0])
+                if not pd.isna(test_value):
+                    return col
+    
+    # Если не нашли по названию, пробуем каждую колонку
+    for col in df.columns:
+        # Берём первые 3 непустых значения
+        sample = df[col].dropna().head(3)
+        if len(sample) == 0:
+            continue
+        
+        parsed_count = 0
+        for val in sample:
+            result = smart_parse_date(val)
+            if not pd.isna(result):
+                parsed_count += 1
+        
+        # Если хотя бы 2 из 3 распарсились - это колонка с датами
+        if parsed_count >= 2:
+            return col
+    
+    # Fallback: первая колонка
+    return df.columns[0]
+
+
+def find_value_column(df, date_col):
+    """
+    Автоматическое определение колонки со значениями.
+    """
+    value_keywords = ['значение', 'value', 'сумма', 'amount', 'показатель', 'индекс', 'index', 'rate', 'ставка', 'цена', 'price']
+    
+    # Сначала ищем по ключевым словам
+    for col in df.columns:
+        if col == date_col:
+            continue
+        col_lower = str(col).lower()
+        for keyword in value_keywords:
+            if keyword in col_lower:
+                return col
+    
+    # Fallback: первая числовая колонка, не являющаяся датой
+    for col in df.columns:
+        if col == date_col:
+            continue
+        
+        # Пробуем распарсить как числа
+        sample = df[col].dropna().head(5)
+        if len(sample) == 0:
+            continue
+        
+        parsed_count = 0
+        for val in sample:
+            result = smart_parse_numeric(val)
+            if not np.isnan(result):
+                parsed_count += 1
+        
+        if parsed_count >= 3:
+            return col
+    
+    # Fallback: вторая колонка
+    return df.columns[1] if len(df.columns) > 1 else df.columns[0]
+
+
 def parse_csv(file_content: bytes):
     """Парсинг CSV с автоопределением разделителя и колонок"""
     # Пробуем разные кодировки
@@ -176,28 +385,8 @@ def parse_csv(file_content: bytes):
             df = pd.read_csv(StringIO(content), sep=sep)
             
             if df.shape[1] >= 2:  # Минимум 2 колонки
-                # Автоопределение колонок
-                date_col = None
-                value_col = None
-                
-                # Поиск колонки с датами
-                for col in df.columns:
-                    try:
-                        pd.to_datetime(df[col].iloc[0])
-                        date_col = col
-                        break
-                    except:
-                        continue
-                
-                # Поиск колонки с числовыми значениями
-                for col in df.columns:
-                    if col != date_col:
-                        try:
-                            pd.to_numeric(df[col])
-                            value_col = col
-                            break
-                        except:
-                            continue
+                date_col = find_date_column(df)
+                value_col = find_value_column(df, date_col)
                 
                 if date_col and value_col:
                     return df, date_col, value_col
@@ -211,24 +400,88 @@ def parse_csv(file_content: bytes):
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
-    """Загрузка CSV/XLSX файла"""
+    """
+    Загрузка CSV/XLSX файла с улучшенным парсингом.
+    
+    Поддержка:
+    - Русские названия месяцев (январь 2023, янв 2023)
+    - Excel serial dates (44927 -> 2023-01-01)
+    - Числа с запятой (10,5 -> 10.5)
+    - Различные кодировки (UTF-8, CP1251, Latin1)
+    - Автоопределение колонок с датами и значениями
+    """
     try:
         content = await file.read()
+        filename = file.filename.lower() if file.filename else ""
         
-        if file.filename.endswith('.csv'):
-            df, date_col, value_col = parse_csv(content)
-        elif file.filename.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(BytesIO(content))
-            date_col, value_col = df.columns[0], df.columns[1]
-        else:
+        # Валидация расширения файла
+        if not (filename.endswith('.csv') or filename.endswith('.xlsx') or filename.endswith('.xls')):
             raise HTTPException(400, "Поддерживаются только CSV и XLSX файлы")
         
-        # Обработка данных
-        df[date_col] = pd.to_datetime(df[date_col])
-        df[value_col] = pd.to_numeric(df[value_col], errors='coerce')
+        # Парсинг файла
+        if filename.endswith('.csv'):
+            df, date_col, value_col = parse_csv(content)
+        else:
+            # XLSX/XLS
+            try:
+                df = pd.read_excel(BytesIO(content))
+            except Exception as e:
+                raise HTTPException(400, f"Ошибка чтения Excel файла: {str(e)}. Убедитесь, что файл не повреждён.")
+            
+            if len(df.columns) < 2:
+                raise HTTPException(400, "Файл должен содержать минимум 2 колонки (дата и значение)")
+            
+            date_col = find_date_column(df)
+            value_col = find_value_column(df, date_col)
         
-        # Удаление NaN
-        df = df.dropna()
+        # Сохраняем исходное количество строк для отчёта
+        original_rows = len(df)
+        
+        # Умный парсинг дат
+        df['_parsed_date'] = df[date_col].apply(smart_parse_date)
+        
+        # Проверяем успешность парсинга дат
+        date_success_count = df['_parsed_date'].notna().sum()
+        if date_success_count == 0:
+            # Детальная диагностика
+            sample_values = df[date_col].head(3).tolist()
+            raise HTTPException(
+                400, 
+                f"Не удалось распознать даты в колонке '{date_col}'. "
+                f"Примеры значений: {sample_values}. "
+                f"Поддерживаемые форматы: 2023-01-15, 15.01.2023, январь 2023, Jan 2023"
+            )
+        
+        # Умный парсинг числовых значений
+        df['_parsed_value'] = df[value_col].apply(smart_parse_numeric)
+        
+        # Проверяем успешность парсинга значений
+        value_success_count = df['_parsed_value'].notna().sum()
+        if value_success_count == 0:
+            sample_values = df[value_col].head(3).tolist()
+            raise HTTPException(
+                400,
+                f"Не удалось распознать числовые значения в колонке '{value_col}'. "
+                f"Примеры значений: {sample_values}. "
+                f"Поддерживаемые форматы: 10.5, 10,5, 10 000, 20%"
+            )
+        
+        # Используем распарсенные данные
+        df[date_col] = df['_parsed_date']
+        df[value_col] = df['_parsed_value']
+        
+        # Удаление строк с NaN (после парсинга)
+        df = df.dropna(subset=[date_col, value_col])
+        
+        # Проверка на пустой результат
+        if len(df) == 0:
+            raise HTTPException(
+                400,
+                f"После обработки не осталось валидных данных. "
+                f"Исходных строк: {original_rows}. "
+                f"Успешно распознано дат: {date_success_count}, значений: {value_success_count}. "
+                f"Проверьте формат данных в файле."
+            )
         
         # Сортировка по дате
         df = df.sort_values(by=date_col)
@@ -236,9 +489,22 @@ async def upload_file(file: UploadFile = File(...)):
         # Определение частоты
         frequency = infer_frequency(df[date_col])
         
-        return {
+        # Формируем предупреждения если часть данных была отброшена
+        warnings = []
+        skipped_rows = original_rows - len(df)
+        if skipped_rows > 0:
+            warnings.append(f"Пропущено строк с некорректными данными: {skipped_rows}")
+        
+        if date_success_count < original_rows:
+            warnings.append(f"Не распознано дат: {original_rows - date_success_count}")
+        
+        if value_success_count < original_rows:
+            warnings.append(f"Не распознано значений: {original_rows - value_success_count}")
+        
+        result = {
             "status": "success",
             "rows": len(df),
+            "original_rows": original_rows,
             "date_column": date_col,
             "value_column": value_col,
             "frequency": frequency,
@@ -247,7 +513,17 @@ async def upload_file(file: UploadFile = File(...)):
                 "values": df[value_col].tolist()
             }
         }
+        
+        if warnings:
+            result["warnings"] = warnings
+        
+        return result
+        
+    except HTTPException:
+        raise
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, f"Ошибка обработки файла: {str(e)}")
 
 
