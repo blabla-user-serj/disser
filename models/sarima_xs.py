@@ -62,15 +62,43 @@ class SARIMAXS:
         self.cv_scores = {}  # История CV скоров
         
     def _adaptive_constraints(self, n):
-        """Адаптивные ограничения на основе размера выборки"""
-        p_max = min(3, n - 3)
-        d_max = min(2, int(n / 4))
-        q_max = min(3, n - 3)
+        """
+        Адаптивные ограничения на основе размера выборки.
         
-        # Сезонные параметры (если данных достаточно)
-        P_max = min(2, max(0, n // 20))
-        D_max = 1 if n >= 24 else 0
-        Q_max = min(2, max(0, n // 20))
+        КРИТИЧНО для коротких рядов (n < 30):
+        - Ограничиваем d <= 1 (двойное дифференцирование нестабильно)
+        - Ограничиваем общее число параметров p+q <= min(4, n//4)
+        - Для очень коротких рядов (n < 15) используем минимальные параметры
+        """
+        # Для очень коротких рядов - минимальные параметры
+        if n < 10:
+            return {'p': 1, 'd': 1, 'q': 1, 'P': 0, 'D': 0, 'Q': 0}
+        
+        # Максимальное общее число параметров (правило: n/4 - 1)
+        max_total_params = max(2, n // 4 - 1)
+        
+        # p_max: AR компоненты
+        p_max = min(2, max_total_params)
+        
+        # d_max: порядок дифференцирования
+        # КРИТИЧНО: для коротких рядов (n < 30) d=2 часто приводит к нестабильности
+        if n < 30:
+            d_max = 1  # Только первое дифференцирование для коротких рядов
+        else:
+            d_max = min(2, int(n / 10))
+        
+        # q_max: MA компоненты (ограничиваем сильнее чем p)
+        q_max = min(2, max_total_params - 1)
+        
+        # Сезонные параметры (только для длинных рядов)
+        if n >= 24:
+            P_max = min(1, n // 24)
+            D_max = 1
+            Q_max = min(1, n // 24)
+        else:
+            P_max = 0
+            D_max = 0
+            Q_max = 0
         
         return {
             'p': p_max, 'd': d_max, 'q': q_max,
@@ -241,16 +269,72 @@ class SARIMAXS:
         
         return best_order, best_seasonal
     
+    def _is_forecast_stable(self, fitted_model, data, steps=5):
+        """
+        Проверка стабильности прогноза.
+        
+        Модель считается нестабильной если:
+        - Прогноз содержит NaN/Inf
+        - Прогноз выходит за разумные границы (> 10x от диапазона данных)
+        - Прогноз монотонно уходит в бесконечность
+        
+        Returns:
+            bool: True если прогноз стабилен
+        """
+        try:
+            forecast = fitted_model.forecast(steps=steps)
+            
+            # Проверка на NaN/Inf
+            if not np.isfinite(forecast).all():
+                return False
+            
+            # Диапазон исходных данных
+            data_range = np.max(data) - np.min(data)
+            data_mean = np.mean(data)
+            
+            # Прогноз не должен выходить за 10x от диапазона данных
+            max_allowed = data_mean + 10 * data_range
+            min_allowed = data_mean - 10 * data_range
+            
+            if np.any(forecast > max_allowed) or np.any(forecast < min_allowed):
+                return False
+            
+            # Проверка на экспоненциальный рост/падение
+            # Если последовательные разности растут экспоненциально - нестабильно
+            if len(forecast) >= 3:
+                diffs = np.abs(np.diff(forecast))
+                if len(diffs) >= 2:
+                    growth_rate = diffs[1:] / (diffs[:-1] + 1e-10)
+                    if np.any(growth_rate > 5):  # Рост более чем в 5 раз
+                        return False
+            
+            return True
+            
+        except:
+            return False
+    
     def _find_best_order_aic(self, data, constraints, seasonal_period):
-        """Подбор параметров по AIC (fallback для малых данных)"""
+        """
+        Подбор параметров по AIC с проверкой стабильности прогноза.
+        
+        КРИТИЧНО: AIC может выбрать модель с хорошей подгонкой, но нестабильным прогнозом.
+        Поэтому добавляем проверку стабильности прогноза.
+        """
         best_aic = np.inf
         best_order = (1, 1, 1)
         best_seasonal = (0, 0, 0, seasonal_period)
+        
+        candidates = []  # Список кандидатов с их AIC и стабильностью
         
         for p in range(0, constraints['p'] + 1):
             for d in range(0, constraints['d'] + 1):
                 for q in range(0, constraints['q'] + 1):
                     if p + q == 0:
+                        continue
+                    
+                    # Ограничение на общее число параметров для коротких рядов
+                    n = len(data)
+                    if n < 30 and (p + d + q) > max(3, n // 5):
                         continue
                     
                     for P in range(0, constraints['P'] + 1):
@@ -266,14 +350,45 @@ class SARIMAXS:
                                     )
                                     fitted = model.fit(disp=False, maxiter=50)
                                     
-                                    if fitted.aic < best_aic:
-                                        best_aic = fitted.aic
-                                        best_order = (p, d, q)
-                                        best_seasonal = (P, D, Q, seasonal_period)
+                                    # Проверка стабильности прогноза
+                                    is_stable = self._is_forecast_stable(fitted, data)
+                                    
+                                    candidates.append({
+                                        'order': (p, d, q),
+                                        'seasonal': (P, D, Q, seasonal_period),
+                                        'aic': fitted.aic,
+                                        'stable': is_stable,
+                                        'fitted': fitted
+                                    })
+                                    
                                 except:
                                     continue
         
-        print(f"Лучшие параметры (AIC): order={best_order}, seasonal={best_seasonal}, AIC={best_aic:.2f}")
+        # Сортируем: сначала стабильные по AIC, потом нестабильные
+        stable_candidates = [c for c in candidates if c['stable']]
+        unstable_candidates = [c for c in candidates if not c['stable']]
+        
+        stable_candidates.sort(key=lambda x: x['aic'])
+        unstable_candidates.sort(key=lambda x: x['aic'])
+        
+        if stable_candidates:
+            best = stable_candidates[0]
+            best_order = best['order']
+            best_seasonal = best['seasonal']
+            best_aic = best['aic']
+            print(f"Лучшие параметры (AIC, стабильный): order={best_order}, seasonal={best_seasonal}, AIC={best_aic:.2f}")
+            
+            if unstable_candidates:
+                worst_unstable = unstable_candidates[0]
+                print(f"  (отклонено как нестабильное: order={worst_unstable['order']}, AIC={worst_unstable['aic']:.2f})")
+        elif unstable_candidates:
+            # Если нет стабильных, берём простейшую модель
+            print(f"⚠️ Все модели нестабильны! Используем fallback (0,1,1)")
+            best_order = (0, 1, 1)
+            best_seasonal = (0, 0, 0, seasonal_period)
+            best_aic = float('inf')
+        else:
+            print(f"⚠️ Не удалось подобрать параметры! Используем (1,1,1)")
         
         return best_order, best_seasonal
     
