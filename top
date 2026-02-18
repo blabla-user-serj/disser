@@ -1,0 +1,342 @@
+[33mcommit 9e632439d613f8d73b4905364d31e39a849a582e[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m
+Author: Serj <serjio.tsa@yandex.ru>
+Date:   Fri Feb 13 13:25:05 2026 +0300
+
+    add new test data
+
+[33mcommit ff13fa9bd8a1958a01391d0f2f0b597dad92d442[m
+Author: Serj <serjio.tsa@yandex.ru>
+Date:   Fri Feb 13 13:06:52 2026 +0300
+
+    add new test data
+
+[33mcommit 2d7778ec70c89eb98a45727e463d295f5def5c6e[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Mon Feb 9 07:46:27 2026 +0300
+
+    Add files via upload
+
+[33mcommit cbb4bdc71566deeae34f731fd81755bdda6da2e6[m
+Merge: 1a1fd95 ed25c17
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Mon Feb 9 07:45:02 2026 +0300
+
+    Merge pull request #28 from blabla-user-serj/fix-prompt-parts-error
+    
+    Fix prompt parts error
+
+[33mcommit ed25c170186f4f3bff671d1a42212623c9ec40bc[m
+Author: blabla-user-serj <genspark_dev@genspark.ai>
+Date:   Mon Feb 9 04:42:02 2026 +0000
+
+    feat(llm_expert): improve LLM expert with extended range and detailed prompts
+    
+    Changes:
+    
+    1. LLM expert only for hybrid model (main.py):
+       - Removed LLM correction for base models (SARIMA, XGBoost, TimeLLM)
+       - Clear message suggesting hybrid model for expert correction
+    
+    2. Extended coefficient range to 0.8-1.2 (llm_expert.py):
+       - Validation now allows ±20% correction
+       - System prompt explains full range meaning:
+         * 0.8-0.9 = strongly overestimated
+         * 0.9-0.95 = moderately overestimated
+         * 0.95-1.05 = slight adjustment or adequate
+         * 1.05-1.1 = moderately underestimated
+         * 1.1-1.2 = strongly underestimated
+    
+    3. More detailed prompts:
+       - System prompt: explains role, format, coefficient ranges
+       - User prompt: structured with sections (historical data, trend,
+         forecast analysis, deviations)
+       - Clear task instructions with numbered steps
+    
+    4. Web context integration:
+       - System prompt explicitly instructs to use web context
+       - User prompt highlights external facts with ⚡ IMPORTANT marker
+       - Up to 7 key facts displayed with clear formatting
+       - Instructions to adjust coefficients based on context trends
+
+[33mcommit abbf51358e8e58330e6179d27c6da6685ea0b448[m
+Author: blabla-user-serj <genspark_dev@genspark.ai>
+Date:   Sun Feb 8 16:04:47 2026 +0000
+
+    fix(hybrid): integrate LLM correction with Δ_LLM in Formula 2.18
+    
+    Changes in backend/main.py:
+    - Compute Δ_LLM BEFORE calling HybridModel.predict()
+    - Pass llm_correction to hybrid model for proper w_LLM × Δ_LLM calculation
+    - For non-hybrid models, apply correction factors directly
+    - Improved logging of LLM correction process
+    
+    Changes in backend/llm_expert.py:
+    - Add _generate_detailed_analysis() method for comprehensive forecast analysis
+    - Analysis includes: historical stats, trend, forecast evaluation, LLM correction
+    - Shows correction factors interpretation (e.g., 'point 1: decrease by 3%')
+    - Includes web context key facts when available
+    - All return paths now use detailed analysis
+    
+    New dataset: data/test_dataset_unemployment/
+    - Youth unemployment in Russia (15-24 years), source: FRED/World Bank
+    - Train: 1991-2019 (29 points), Test: 2020-2024 (5 points)
+    - Web resources limited to pre-2020 data to avoid test leakage
+    - README.md with dataset description and statistics
+
+[33mcommit 1a1fd95739c11d9518c5d8c7fd8b709f6235a5d1[m
+Merge: ea36cbd b62c47b
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Sat Feb 7 19:24:26 2026 +0300
+
+    Merge pull request #27 from blabla-user-serj/fix-prompt-parts-error
+    
+    fix(llm_expert): add fallback text parsing for coefficient extraction
+
+[33mcommit b62c47b6fdf5e9bed5db880004efeb7ee4d99783[m
+Author: blabla-user-serj <genspark_dev@genspark.ai>
+Date:   Sat Feb 7 16:22:06 2026 +0000
+
+    fix(llm_expert): add fallback text parsing for coefficient extraction
+    
+    - Add _extract_coefficients_from_text() method for parsing text responses
+    - Support multiple extraction methods:
+      1. Array in brackets [0.98, 1.02, ...]
+      2. Decimal numbers 0.97, 1.03 in text
+      3. Word markers (завышено/занижено) for semantic extraction
+    - Improve system prompt with explicit JSON example
+    - Simplify user prompt with concrete example response
+    - Add logging for text-based coefficient extraction
+    
+    This fixes the issue where YandexGPT returns text analysis without JSON,
+    causing all coefficients to default to 1.0.
+
+[33mcommit ea36cbdcdc1e20fff1bc3ac5be29464dc67df33b[m
+Merge: 7b94f86 6e69d7a
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Sat Feb 7 19:16:33 2026 +0300
+
+    Merge pull request #26 from blabla-user-serj/fix-prompt-parts-error
+    
+    fix(llm_expert): исправлен промпт для осмысленных коэффициентов коррекции
+
+[33mcommit 6e69d7a3995029ac4d0f4e0ca745161e1bece7d7[m
+Author: blabla-user-serj <genspark_dev@genspark.ai>
+Date:   Sat Feb 7 16:15:02 2026 +0000
+
+    fix(llm_expert): improve prompt to return meaningful coefficients
+    
+    - Rewrite _build_system_prompt() to be simpler and avoid trigger words
+    - Rewrite _build_user_prompt() with trend analysis and clear coefficient guidance
+    - Add support for multiple JSON response formats (weights, correction_factors, coefficients)
+    - Improve JSON parsing with regex fallback for responses with surrounding text
+    - Include jump percentage and trend-vs-forecast analysis in prompt
+    
+    The previous simplified prompt was too minimal and resulted in LLM always
+    returning 1.0 coefficients. The new prompt provides:
+    - Concrete trend analysis (expected next value, jump percentage)
+    - Clear coefficient ranges with specific meanings (0.95-0.99 for overestimate, etc.)
+    - Evaluation criteria (trend correspondence, smooth transition, within spread)
+
+[33mcommit 7b94f867102b46d8d8eeaab72c8b521028668d3a[m
+Merge: fbf6955 7f4f2fb
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Sat Feb 7 18:54:18 2026 +0300
+
+    Merge pull request #25 from blabla-user-serj/fix-prompt-parts-error
+    
+    fix(llm_expert): удалён дублирующийся код с prompt_parts
+
+[33mcommit 7f4f2fb781b19319cc7b281622ddd5b7cf7f737d[m
+Author: blabla-user-serj <genspark_dev@genspark.ai>
+Date:   Sat Feb 7 15:53:40 2026 +0000
+
+    fix(llm_expert): удалён дублирующийся код с prompt_parts
+    
+    Ошибка: 'name prompt_parts is not defined'
+    
+    Причина: при мёрдже остался старый код после нового промпта.
+    
+    Исправление: удалён дублирующийся блок кода (строки 467-515),
+    который ссылался на несуществующую переменную prompt_parts.
+
+[33mcommit fbf6955514f037d15645217fe91cb238a618650a[m
+Merge: 1f2c923 28105b2
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Sat Feb 7 18:46:51 2026 +0300
+
+    Merge pull request #24 from blabla-user-serj/genspark_ai_developer
+    
+    fix(llm_expert): упрощён промпт для совместимости с YandexGPT
+
+[33mcommit 28105b2747b8a54868ea23b1c4a7df0229dea5f4[m
+Merge: 2b87bef 1f2c923
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Sat Feb 7 18:46:16 2026 +0300
+
+    Merge branch 'main' into genspark_ai_developer
+
+[33mcommit 2b87befe7da606943ba36056b7bb7195cc4ff08f[m
+Author: blabla-user-serj <genspark_dev@genspark.ai>
+Date:   Sat Feb 7 15:42:45 2026 +0000
+
+    fix(llm_expert): упрощён промпт для совместимости с YandexGPT
+    
+    Проблема: LLM отказывался отвечать даже на 'академический' промпт.
+    
+    Решение - максимально простой и нейтральный промпт:
+    
+    Системный:
+    'Ты помощник для анализа числовых данных. Отвечай только в формате JSON.'
+    
+    Пользовательский:
+    'Дан числовой ряд со статистиками...
+    Модель дала значения...
+    Задача: укажи множитель от 0.9 до 1.1.
+    Ответь JSON: {weights: [...], comment: ...}'
+    
+    Изменения:
+    - Убраны все 'опасные' слова (прогноз, коррекция, финансы)
+    - Простая формулировка 'множитель'
+    - Минимальный JSON-формат ответа
+    - Диапазон сужен до [0.9, 1.1]
+
+[33mcommit 1f2c923d073aec820cd46718d7148d0cc9392d05[m
+Merge: a53fa8e 5fe8fba
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Sat Feb 7 18:37:46 2026 +0300
+
+    Merge pull request #23 from blabla-user-serj/genspark_ai_developer
+    
+    fix(llm_expert): переформулирован промпт для избежания отказов LLM
+
+[33mcommit 5fe8fba8063e2a6d1d3d78911f4a3b238e858829[m
+Merge: e6a7aa8 a53fa8e
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Sat Feb 7 18:37:35 2026 +0300
+
+    Merge branch 'main' into genspark_ai_developer
+
+[33mcommit e6a7aa8c20d4d10e5319d0d91b7748f51667825f[m
+Author: blabla-user-serj <genspark_dev@genspark.ai>
+Date:   Sat Feb 7 15:35:34 2026 +0000
+
+    feat(llm_expert): улучшен промпт и извлечение веб-контекста
+    
+    Улучшения:
+    1. HTMLTextExtractor - парсер для извлечения чистого текста из HTML
+       - Удаляет скрипты, стили, комментарии
+       - Сохраняет структуру текста
+    
+    2. Улучшенное извлечение веб-контекста:
+       - Чистый текст вместо сырого HTML
+       - Автоматическое извлечение ключевых фактов (числа, %, даты)
+       - Лимит 3000 символов на источник
+    
+    3. Академический стиль промпта (исправление отказов LLM):
+       - Формулировка как 'научное исследование'
+       - Нейтральная терминология: quality_weights, methodology
+       - Избегание слов 'финансы', 'коррекция', 'прогноз'
+    
+    4. Валидация коэффициентов:
+       - С контекстом: [0.8, 1.2]
+       - Без контекста: [0.95, 1.05]
+    
+    5. Расширенный формат ответа:
+       - confidence, methodology, data_sources
+       - Поддержка старого и нового формата
+
+[33mcommit a53fa8eda987380d1f270e8aad56274b5624a4cd[m
+Merge: 47467ca 06b6c39
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Sat Feb 7 18:31:15 2026 +0300
+
+    Merge pull request #22 from blabla-user-serj/genspark_ai_developer
+    
+    feat(llm_expert): улучшен промпт и извлечение веб-контекста
+
+[33mcommit 06b6c391c210b9f0394756ebc4f1de277102cffe[m
+Author: blabla-user-serj <genspark_dev@genspark.ai>
+Date:   Sat Feb 7 15:29:21 2026 +0000
+
+    feat(llm_expert): улучшен промпт и извлечение веб-контекста
+    
+    Изменения:
+    1. Добавлен HTMLTextExtractor для чистого извлечения текста из HTML
+       - Удаляет скрипты, стили, комментарии
+       - Сохраняет структуру (блочные теги → переносы)
+    
+    2. Улучшено извлечение веб-контекста (_fetch_web_context):
+       - Возвращает чистый текст вместо сырого HTML
+       - Извлекает ключевые факты (числа, проценты, даты, тренды)
+       - Увеличен лимит до 3000 символов на источник
+    
+    3. ЖЁСТКИЕ требования в промпте:
+       - Запрет использовать внешние знания
+       - Обязательное цитирование источников
+       - Ограничения на коэффициенты: ±30% с контекстом, ±5% без
+       - Требование указывать sources_used
+    
+    4. Валидация коэффициентов (_validate_correction_factors):
+       - Автоматическое ограничение диапазона
+       - Исправление некорректных значений
+       - Дополнение/обрезка до нужной длины
+    
+    5. Расширен формат ответа:
+       - confidence: уверенность модели
+       - reasoning: обоснование с цитатами
+       - sources_used: использованные источники
+
+[33mcommit 47467ca76b29041e015ec14ed6f52f7d379cd143[m
+Merge: 7ea6b28 823b8a4
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Sat Feb 7 18:10:15 2026 +0300
+
+    Merge pull request #21 from blabla-user-serj/genspark_ai_developer
+    
+    feat(hybrid_model): увеличен начальный вес SARIMA-XS до 0.5
+
+[33mcommit 823b8a4298dfdaf29ffa533a5c9e6bacc9819458[m
+Author: blabla-user-serj <blabla-user-serj@users.noreply.github.com>
+Date:   Sat Feb 7 15:08:59 2026 +0000
+
+    feat(hybrid_model): увеличен начальный вес SARIMA-XS до 0.5
+    
+    - Изменена инициализация весов: SARIMA-XS 0.5, XGBoost 0.3, TimeLLM 0.2
+    - Обновлён fallback на аналогичное распределение весов
+    - SARIMA-XS показывает лучшую устойчивость на экстремально коротких рядах (n=5-20)
+
+[33mcommit 7ea6b2802d6d94c8ef077cbac080a54d1d48786c[m
+Merge: 13a5fa2 29aa058
+Author: blabla-user-serj <74974279+blabla-user-serj@users.noreply.github.com>
+Date:   Thu Feb 5 16:45:45 2026 +0300
+
+    Merge pull request #20 from blabla-user-serj/genspark_ai_developer
+    
+    Genspark ai developer
+
+[33mcommit 29aa0580967d670602decc2b3af4f1b5841e2536[m
+Author: blabla-user-serj <genspark_dev@genspark.ai>
+Date:   Thu Feb 5 12:52:45 2026 +0000
+
+    feat(experiments): добавлена Глава 4 диссертации - экспериментальное исследование
+    
+    Содержание:
+    - 4.1 Постановка задачи экспериментального исследования
+    - 4.2 Описание экспериментальных данных (5 наборов: ключевая ставка, инфляция, USD/RUB, Brent, промпроизводство)
+    - 4.3 Методология экспериментального исследования
+    - 4.4 Результаты экспериментального исследования (таблицы 4.2-4.6)
+    - 4.5 Сводный анализ результатов (таблица 4.7)
+    - 4.6 Анализ эффективности адаптивных механизмов
+    - 4.7 Сравнение вычислительной сложности (таблица 4.8)
+    - 4.8 Выводы по главе
+    
+    Ключевые результаты:
+    - Гибридная модель превосходит базовые методы в среднем на 17-18% по MAE
+    - Преимущество до 32.7% относительно LSTM
+    - Усиление эффекта при n<30 (до 22.2% улучшения)
+    
+    Файлы:
+    - chapter4_experiments.py - скрипт экспериментов
+    - generate_chapter4_docx.py - генерация документа
+    - results.json - результаты экспериментов
+    - Глава_4_Экспериментальное_исследование.docx - готовый документ

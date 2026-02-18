@@ -717,7 +717,6 @@ async def forecast(
 
         forecast_values = result['forecast']
         forecast_values = np.round(forecast_values, decimals = 3)
-        print(forecast_values)
         lower_bound = result.get('lower_bound', forecast_values * 0.95)
         upper_bound = result.get('upper_bound', forecast_values * 1.05)
         
@@ -737,7 +736,8 @@ async def forecast(
             'model_type': model_type,
             'frequency': frequency
         }
-        
+        print("!"*60)
+        print(corrected_forecast)
         # Метрики (на исторических данных)
         # Для HybridModel метрики уже рассчитаны внутри модели при валидации
         # Для остальных моделей делаем честную валидацию
@@ -816,7 +816,6 @@ async def forecast(
             "weights": clean_weights,
             "model_info": clean_model_info
         }
-        
     except Exception as e:
         import traceback
         traceback.print_exc()

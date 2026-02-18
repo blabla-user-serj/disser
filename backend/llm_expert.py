@@ -303,7 +303,7 @@ class LLMExpert:
             print(f"   - Input size: {len(prompt)} символов")
             
             # Формируем model URI
-            model_uri = f"gpt://{self.folder_id}/{self.model}/latest"
+            model_uri = f"gpt://{self.folder_id}/{self.model}"
             
             # Используем responses.create()
             response = self.client.responses.create(
