@@ -129,105 +129,178 @@ class LLMExpert:
             text = re.sub(r'\s+', ' ', text)
             return text.strip()
     
-    def _extract_key_facts(self, text: str, max_facts: int = 10) -> List[str]:
+    def _extract_key_facts_regex(self, text: str, max_facts: int = 10) -> List[str]:
         """
-        Извлекает ключевые факты из текста (предложения с числами, датами, процентами).
-        
+        Regex-базовое извлечение фактов (фоллбэк, если LLM недоступен).
+        Извлекает предложения с числами, датами, процентами.
+
         Args:
             text: исходный текст
             max_facts: максимальное количество фактов
-            
+
         Returns:
             Список ключевых предложений
         """
-        # Разбиваем на предложения
         sentences = re.split(r'[.!?]\s+', text)
-        
         key_facts = []
-        
-        # Паттерны для поиска релевантных предложений
         patterns = [
-            r'\d+[,.]?\d*\s*%',           # Проценты: 15%, 3.5%
-            r'\d+[,.]?\d*\s*(млн|млрд|тыс|руб|\$|€|USD|RUB)',  # Суммы
-            r'(рост|падение|снижение|увеличение|сокращение)',   # Тренды
-            r'(прогноз|ожидается|планируется|оценивается)',     # Прогнозы
-            r'(20[0-9]{2}|январ|феврал|март|апрел|май|июн|июл|август|сентябр|октябр|ноябр|декабр)',  # Даты
-            r'(спрос|предложение|цен[ау]|стоимость|курс)',      # Экономические термины
-            r'(инфляци|ставк|ВВП|GDP|индекс)',                  # Макроэкономика
+            r'\d+[,.]?\d*\s*%',
+            r'\d+[,.]?\d*\s*(млн|млрд|тыс|руб|\$|€|USD|RUB)',
+            r'(рост|падение|снижение|увеличение|сокращение)',
+            r'(прогноз|ожидается|планируется|оценивается)',
+            r'(20[0-9]{2}|январ|феврал|март|апрел|май|июн|июл|август|сентябр|октябр|ноябр|декабр)',
+            r'(спрос|предложение|цен[ау]|стоимость|курс)',
+            r'(инфляци|ставк|ВВП|GDP|индекс)',
         ]
-        
         for sentence in sentences:
             sentence = sentence.strip()
             if len(sentence) < 20 or len(sentence) > 500:
                 continue
-                
-            # Проверяем, содержит ли предложение ключевые паттерны
             for pattern in patterns:
                 if re.search(pattern, sentence, re.IGNORECASE):
                     key_facts.append(sentence)
                     break
-            
             if len(key_facts) >= max_facts:
                 break
-        
         return key_facts
+
+    def _extract_key_facts_llm(self, text: str, url: str, max_facts: int = 10) -> List[str]:
+        """
+        Умное LLM-базированное извлечение фактов из текста страницы.
+
+        Передаёт очищенный текст страницы в YandexGPT и просит выделить
+        конкретные числовые, экономические и трендовые факты, релевантные
+        для социально-экономического прогнозирования.
+
+        Args:
+            text: очищенный текст страницы
+            url: адрес источника (для лога)
+            max_facts: максимальное число фактов
+
+        Returns:
+            Список фактов, извлечённых LLM, либо regex-фоллбэк
+        """
+        if not self.client:
+            print(f"   ⚠️ LLM недоступен, используем regex-извлечение для {url}")
+            return self._extract_key_facts_regex(text, max_facts)
+
+        # Ограничиваем текст, чтобы не превысить лимит промпта
+        trimmed = text[:4000] if len(text) > 4000 else text
+
+        instructions = (
+            "Ты эксперт по извлечению фактов из текста для задач прогнозирования. "
+            "Твоя задача — выделить конкретные числовые, трендовые и экономические факты, "
+            "релевантные для социально-экономического прогнозирования временных рядов. "
+            "Отвечай строго JSON-списком: {\"facts\": [\"...\", \"...\"]}"
+        )
+        prompt = (
+            f"Из текста ниже (источник: {url}) извлеки до {max_facts} наиболее важных фактов "
+            f"для прогнозирования социально-экономических показателей.\n"
+            f"Требования к фактам:\n"
+            f"- Конкретные числовые значения (%, руб., USD, индексы)\n"
+            f"- Динамика: рост/снижение с указанием величины и периода\n"
+            f"- Прогнозы или ожидания властей/аналитиков\n"
+            f"- Ключевые события, влияющие на тренд\n\n"
+            f"ТЕКСТ:\n{trimmed}\n\n"
+            f"ОТВЕТ (JSON):"
+        )
+
+        try:
+            model_uri = f"gpt://{self.folder_id}/{self.model}/latest"
+            response = self.client.responses.create(
+                model=model_uri,
+                temperature=0.1,          # низкая температура → высокая точность
+                instructions=instructions,
+                input=prompt,
+                max_output_tokens=600
+            )
+            raw = response.output_text.strip()
+            print(f"   🧠 LLM извлёк факты из {url}: {raw[:120]}...")
+
+            # Парсинг JSON
+            json_text = raw
+            if "```json" in json_text:
+                json_text = json_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in json_text:
+                json_text = json_text.split("```")[1].split("```")[0].strip()
+            data = json.loads(json_text)
+            facts = data.get("facts", [])
+            if isinstance(facts, list):
+                return [str(f).strip() for f in facts if str(f).strip()][:max_facts]
+
+        except Exception as e:
+            print(f"   ⚠️ LLM-извлечение не удалось ({e}), фоллбэк на regex")
+
+        # Фоллбэк на regex
+        return self._extract_key_facts_regex(text, max_facts)
+
+    # Обратная совместимость: метод с прежним именем вызывает умный вариант
+    def _extract_key_facts(self, text: str, max_facts: int = 10) -> List[str]:
+        """Алиас для обратной совместимости. Используй _extract_key_facts_regex напрямую."""
+        return self._extract_key_facts_regex(text, max_facts)
 
     def _fetch_web_context(self, urls: List[str], max_chars_per_url: int = 3000) -> Tuple[str, List[str]]:
         """
         Извлечение структурированного контекста из веб-ссылок.
-        
+
+        Для каждого URL:
+        1. Загружает HTML страницы.
+        2. Извлекает чистый текст с помощью HTMLTextExtractor.
+        3. Вызывает LLM (_extract_key_facts_llm), чтобы та выделила
+           конкретные числовые и трендовые факты, релевантные для прогнозирования.
+           Если LLM недоступна — использует regex-фоллбэк.
+
         Args:
             urls: список URL для загрузки
             max_chars_per_url: максимум символов на один источник
-            
+
         Returns:
-            Tuple[полный_текст, список_ключевых_фактов]
+            Tuple[полный_текст_контекста, список_ключевых_фактов]
         """
         context_parts = []
         all_key_facts = []
-        
+
         for url in urls:
             try:
                 response = requests.get(
-                    url, 
-                    timeout=15, 
+                    url,
+                    timeout=15,
                     headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                         'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8'
                     }
                 )
-                
+
                 if response.status_code == 200:
-                    # Извлекаем чистый текст из HTML
+                    # Шаг 1: Извлекаем чистый текст из HTML
                     clean_text = self._extract_text_from_html(response.text)
-                    
-                    # Ограничиваем длину
-                    if len(clean_text) > max_chars_per_url:
-                        clean_text = clean_text[:max_chars_per_url] + '...'
-                    
-                    # Извлекаем ключевые факты
-                    facts = self._extract_key_facts(clean_text)
+
+                    # Шаг 2: Ограничиваем длину для контекстного блока
+                    display_text = clean_text[:max_chars_per_url] + '...' if len(clean_text) > max_chars_per_url else clean_text
+
+                    # Шаг 3: Умное LLM-извлечение фактов (с фоллбэком на regex)
+                    facts = self._extract_key_facts_llm(clean_text, url)
                     all_key_facts.extend(facts)
-                    
-                    context_parts.append(f"\n--- ИСТОЧНИК: {url} ---\n{clean_text}")
+
+                    context_parts.append(f"\n--- ИСТОЧНИК: {url} ---\n{display_text}")
                     print(f"   ✓ Загружен: {url} ({len(clean_text)} символов, {len(facts)} фактов)")
                 else:
                     context_parts.append(f"\n--- ИСТОЧНИК: {url} ---\nОшибка загрузки: HTTP {response.status_code}")
                     print(f"   ✗ Ошибка {response.status_code}: {url}")
-                    
+
             except requests.Timeout:
                 context_parts.append(f"\n--- ИСТОЧНИК: {url} ---\nОшибка: таймаут соединения")
                 print(f"   ✗ Таймаут: {url}")
             except Exception as e:
                 context_parts.append(f"\n--- ИСТОЧНИК: {url} ---\nОшибка: {str(e)}")
                 print(f"   ✗ Ошибка: {url} - {e}")
-        
+
         full_context = "\n".join(context_parts) if context_parts else ""
-        
-        # Убираем дубликаты фактов
+
+        # Убираем дубликаты фактов, сохраняя порядок
         unique_facts = list(dict.fromkeys(all_key_facts))
-        
+
         return full_context, unique_facts[:15]  # Максимум 15 уникальных фактов
 
     def test_yandex_gpt(self) -> bool:

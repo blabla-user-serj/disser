@@ -416,7 +416,8 @@ class HybridModel:
         self.data_robust = self._robust_preprocess(data)
         
         # Определяем нужна ли валидация для весов
-        need_validation = n > 10
+        # НС-2: граничное условие n >= 10 (диссертация требует обновления весов при n=10)
+        need_validation = n >= 10
         
         if need_validation:
             split = int(0.8 * n)

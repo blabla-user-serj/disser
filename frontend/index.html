@@ -240,6 +240,12 @@
                 currentChart = null;
             }
 
+            // Сброс предыдущих данных в секции результатов
+            document.getElementById('metricsGrid').innerHTML = '';
+            document.getElementById('llmAnalysisContent').innerHTML = '';
+            document.getElementById('llmAnalysis').style.display = 'none';
+            document.getElementById('modelInfo').innerHTML = '';
+
             // Построение графика с доверительными интервалами
             const ctx = document.getElementById('forecastChart').getContext('2d');
             
@@ -277,22 +283,22 @@
                             label: 'Верхняя граница (95%)',
                             data: upperBound,
                             borderColor: 'rgba(255, 99, 132, 0.3)',
-                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.08)',
                             borderWidth: 1,
                             borderDash: [2, 2],
                             pointRadius: 0,
-                            fill: '+1',
+                            fill: false,
                             tension: 0.1
                         },
                         {
                             label: 'Нижняя граница (95%)',
                             data: lowerBound,
                             borderColor: 'rgba(255, 99, 132, 0.3)',
-                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.08)',
                             borderWidth: 1,
                             borderDash: [2, 2],
                             pointRadius: 0,
-                            fill: false,
+                            fill: '-1',
                             tension: 0.1
                         }
                     ]
@@ -334,24 +340,31 @@
             });
 
             // Метрики
-            const metricsHtml = `
+            const m = result.metrics;
+            let metricsHtml = `
                 <div class="metric-card">
                     <h4>MAE</h4>
-                    <p>${result.metrics.MAE.toFixed(2)}</p>
+                    <p>${(m.MAE !== undefined ? m.MAE : 0).toFixed(4)}</p>
                 </div>
                 <div class="metric-card">
                     <h4>RMSE</h4>
-                    <p>${result.metrics.RMSE.toFixed(2)}</p>
+                    <p>${(m.RMSE !== undefined ? m.RMSE : 0).toFixed(4)}</p>
                 </div>
                 <div class="metric-card">
                     <h4>R²</h4>
-                    <p>${result.metrics.R2.toFixed(3)}</p>
+                    <p>${(m.R2 !== undefined ? m.R2 : 0).toFixed(4)}</p>
                 </div>
             `;
+            if (m.MAPE !== undefined) {
+                metricsHtml += `<div class="metric-card"><h4>MAPE, %</h4><p>${m.MAPE.toFixed(2)}</p></div>`;
+            }
+            if (m.NMAE !== undefined) {
+                metricsHtml += `<div class="metric-card"><h4>NMAE</h4><p>${m.NMAE.toFixed(4)}</p></div>`;
+            }
             document.getElementById('metricsGrid').innerHTML = metricsHtml;
 
             // LLM Анализ
-            if (result.llm_analysis) {
+            if (result.llm_analysis && result.llm_analysis.trim() !== '') {
                 const correctionBadge = result.correction_applied 
                     ? '<span class="badge badge-success">✅ Коррекция применена</span>'
                     : '<span class="badge badge-warning">⚠️ Базовый анализ</span>';
@@ -359,16 +372,50 @@
                 document.getElementById('llmAnalysisContent').innerHTML = 
                     correctionBadge + '<pre>' + result.llm_analysis + '</pre>';
                 document.getElementById('llmAnalysis').style.display = 'block';
+            } else {
+                document.getElementById('llmAnalysis').style.display = 'none';
             }
 
             // Информация о модели
             let modelInfoHtml = '<h3>📋 Информация о Модели</h3>';
+            modelInfoHtml += `<p>Тип модели: <strong>${result.model_info && result.model_info.model_type ? result.model_info.model_type : document.getElementById('modelSelect').value}</strong></p>`;
+            modelInfoHtml += `<p>Горизонт прогноза: <strong>${result.forecast.values.length} шагов</strong></p>`;
+            modelInfoHtml += `<p>Частота: <strong>${result.frequency}</strong></p>`;
             
             if (result.weights && Object.keys(result.weights).length > 0) {
-                modelInfoHtml += '<h4>Веса моделей:</h4><ul>';
-                for (const [model, weight] of Object.entries(result.weights)) {
-                    modelInfoHtml += `<li>${model}: ${(weight * 100).toFixed(1)}%</li>`;
+                modelInfoHtml += '<h4>Веса подмоделей (гибридная):</h4><ul>';
+                for (const [mdl, weight] of Object.entries(result.weights)) {
+                    const pct = (weight * 100).toFixed(1);
+                    modelInfoHtml += `<li>${mdl}: <strong>${pct}%</strong></li>`;
                 }
+                modelInfoHtml += '</ul>';
+            }
+
+            // Адаптивные коэффициенты из model_info (только для hybrid)
+            if (result.model_info && result.model_info.adaptive_coefficients) {
+                const ac = result.model_info.adaptive_coefficients;
+                modelInfoHtml += '<h4>Адаптивные коэффициенты:</h4><ul>';
+                if (ac.alpha_n !== null && ac.alpha_n !== undefined)
+                    modelInfoHtml += `<li>α(n) = ${Number(ac.alpha_n).toFixed(4)} (Формула 2.6)</li>`;
+                if (ac.kappa_n !== null && ac.kappa_n !== undefined)
+                    modelInfoHtml += `<li>κ(n) = ${Number(ac.kappa_n).toFixed(4)} (Формула 2.12)</li>`;
+                if (ac.w_llm_n !== null && ac.w_llm_n !== undefined)
+                    modelInfoHtml += `<li>w_LLM(n) = ${Number(ac.w_llm_n).toFixed(4)} (Формула 2.17)</li>`;
+                if (ac.confidence_score !== null && ac.confidence_score !== undefined)
+                    modelInfoHtml += `<li>Confidence = ${Number(ac.confidence_score).toFixed(4)} (Формула 2.16)</li>`;
+                modelInfoHtml += '</ul>';
+            }
+
+            // Компоненты прогноза (ensemble, bias, llm) если возвращены
+            if (result.model_info && result.model_info.forecast_components) {
+                const fc = result.model_info.forecast_components;
+                modelInfoHtml += '<h4>Компоненты прогноза (Формула 2.18):</h4><ul>';
+                if (fc.ensemble_forecast !== undefined)
+                    modelInfoHtml += `<li>Ŷ_ensemble (первое): ${Number(fc.ensemble_forecast[0]).toFixed(4)}</li>`;
+                if (fc.bias_correction !== undefined)
+                    modelInfoHtml += `<li>Δ_bias (первое): ${Number(fc.bias_correction[0]).toFixed(4)}</li>`;
+                if (fc.llm_correction !== undefined)
+                    modelInfoHtml += `<li>w_LLM × Δ_LLM (первое): ${Number(fc.llm_correction[0]).toFixed(4)}</li>`;
                 modelInfoHtml += '</ul>';
             }
             

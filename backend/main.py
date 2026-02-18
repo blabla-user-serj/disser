@@ -788,11 +788,28 @@ async def forecast(
         
         # Очищаем метрики
         clean_metrics = {
-            "MAE": sanitize_for_json(float(metrics['MAE'])),
-            "RMSE": sanitize_for_json(float(metrics['RMSE'])),
-            "R2": sanitize_for_json(float(metrics['R2']))
+            "MAE":  sanitize_for_json(float(metrics.get('MAE',  0))),
+            "RMSE": sanitize_for_json(float(metrics.get('RMSE', 0))),
+            "R2":   sanitize_for_json(float(metrics.get('R2',   0))),
         }
+        # MAPE / NMAE если возвращены моделью
+        if 'MAPE' in metrics:
+            clean_metrics['MAPE'] = sanitize_for_json(float(metrics['MAPE']))
+        if 'NMAE' in metrics:
+            clean_metrics['NMAE'] = sanitize_for_json(float(metrics['NMAE']))
         
+        # Добавляем тип модели в model_info
+        model_info['model_type'] = model_type
+
+        # Добавляем компоненты прогноза (ensemble/bias/llm_correction) для Hybrid
+        if model_type == 'hybrid' and isinstance(result, dict):
+            model_info['forecast_components'] = {
+                'ensemble_forecast': sanitize_for_json(result.get('ensemble_forecast', [0.0])),
+                'bias_correction':   sanitize_for_json(result.get('bias_correction',   [0.0])),
+                'llm_correction':    sanitize_for_json(result.get('llm_correction',    [0.0])),
+                'llm_weight':        sanitize_for_json(result.get('llm_weight', 0.0)),
+            }
+
         # Очищаем model_info
         clean_model_info = sanitize_for_json(model_info)
         clean_weights = sanitize_for_json(weights)
