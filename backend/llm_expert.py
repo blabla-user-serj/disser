@@ -185,8 +185,12 @@ class LLMExpert:
             return self._extract_key_facts_regex(text, max_facts)
 
         # Ограничиваем текст, чтобы не превысить лимит промпта
-        trimmed = text[:4000] if len(text) > 4000 else text
+        # (_call_yandex_gpt дополнительно обрезает до 10 000 символов)
+        trimmed = text[:4500] if len(text) > 4500 else text
 
+        # Системный промпт (instructions) и пользовательский промпт (input)
+        # передаются через _call_yandex_gpt, который использует проверенный
+        # вызов responses.create() без /latest и с корректными параметрами
         instructions = (
             "Ты эксперт по извлечению фактов из текста для задач прогнозирования. "
             "Твоя задача — выделить конкретные числовые, трендовые и экономические факты, "
@@ -202,31 +206,37 @@ class LLMExpert:
             f"- Прогнозы или ожидания властей/аналитиков\n"
             f"- Ключевые события, влияющие на тренд\n\n"
             f"ТЕКСТ:\n{trimmed}\n\n"
-            f"ОТВЕТ (JSON):"
+            f"ОТВЕТ (строго JSON, без дополнительного текста):"
         )
 
         try:
-            model_uri = f"gpt://{self.folder_id}/{self.model}/latest"
-            response = self.client.responses.create(
-                model=model_uri,
-                temperature=0.1,          # низкая температура → высокая точность
-                instructions=instructions,
-                input=prompt,
-                max_output_tokens=600
-            )
-            raw = response.output_text.strip()
+            # Используем проверенный _call_yandex_gpt вместо прямого вызова API,
+            # чтобы избежать ошибок формата (400 Bad Request) при дублировании
+            # параметров и суффикса /latest в model URI
+            raw = self._call_yandex_gpt(prompt, instructions)
+            if not raw:
+                raise ValueError("Пустой ответ от LLM")
+
             print(f"   🧠 LLM извлёк факты из {url}: {raw[:120]}...")
 
             # Парсинг JSON
-            json_text = raw
+            json_text = raw.strip()
             if "```json" in json_text:
                 json_text = json_text.split("```json")[1].split("```")[0].strip()
             elif "```" in json_text:
                 json_text = json_text.split("```")[1].split("```")[0].strip()
+
+            # Ищем JSON-объект если ответ содержит лишний текст
+            json_match = re.search(r'\{[^{}]*"facts"\s*:\s*\[[^\]]*\][^{}]*\}', json_text, re.DOTALL)
+            if json_match:
+                json_text = json_match.group(0)
+
             data = json.loads(json_text)
             facts = data.get("facts", [])
-            if isinstance(facts, list):
-                return [str(f).strip() for f in facts if str(f).strip()][:max_facts]
+            if isinstance(facts, list) and facts:
+                extracted = [str(f).strip() for f in facts if str(f).strip()][:max_facts]
+                print(f"   ✅ Извлечено {len(extracted)} фактов через LLM")
+                return extracted
 
         except Exception as e:
             print(f"   ⚠️ LLM-извлечение не удалось ({e}), фоллбэк на regex")
