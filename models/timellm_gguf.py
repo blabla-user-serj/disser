@@ -152,32 +152,23 @@ def clear_gpu_memory_completely():
         for _ in range(3):
             gc.collect()
         
-        # 5. Очистка кэша transformers если загружен
+        # 5. IPC collect — освобождает память занятую дочерними процессами
         try:
-            import transformers
-            if hasattr(transformers, 'utils') and hasattr(transformers.utils, 'hub'):
-                pass  # Кэш transformers не требует явной очистки
-        except ImportError:
+            torch.cuda.ipc_collect()
+        except Exception:
             pass
         
         # 6. Финальная очистка CUDA
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
         
-        # 7. Попытка вернуть память операционной системе
-        try:
-            # Это работает только на некоторых системах
-            torch.cuda.memory._dump_snapshot("cuda_memory_snapshot.pickle")
-        except:
-            pass
-        
-        # Показываем состояние памяти
+        # 7. Показываем состояние памяти
         allocated = torch.cuda.memory_allocated(0) / 1024**3
         reserved = torch.cuda.memory_reserved(0) / 1024**3
         total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        free = total - reserved
+        real_free = total - allocated  # Используем allocated, а не reserved
         
-        print(f"🧹 GPU память: выделено={allocated:.2f}GB, зарезервировано={reserved:.2f}GB, свободно={free:.2f}GB")
+        print(f"🧹 GPU память: выделено={allocated:.2f}GB, зарезервировано={reserved:.2f}GB, реально свободно={real_free:.2f}GB")
         
         # Предупреждение если память всё ещё занята
         if allocated > 1.0:
@@ -503,12 +494,12 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 allocated = torch.cuda.memory_allocated(0) / 1024**3
                 reserved = torch.cuda.memory_reserved(0) / 1024**3
                 total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-                free = total - reserved
+                free = total - allocated  # Используем allocated (реальное потребление)
                 
-                print(f"📊 GPU память перед обучением: свободно={free:.2f}GB из {total:.2f}GB")
+                print(f"📊 GPU память перед обучением: свободно≈{free:.2f}GB (выделено={allocated:.2f}GB) из {total:.2f}GB")
                 
                 # Если недостаточно памяти, сразу переключаемся на simple
-                if free < 4.0:  # Нужно минимум 4GB для Qwen2-0.5B
+                if free < 3.0:  # Снижен порог: 3GB минимум
                     print(f"⚠️  Недостаточно GPU памяти ({free:.2f}GB < 4GB)!")
                     print("   Переключаюсь на simple режим")
                     _OOM_FALLBACK_TO_SIMPLE = True
@@ -559,6 +550,9 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
         if not torch.cuda.is_available():
             raise RuntimeError("NeuralForecast требует CUDA GPU. GPU недоступен.")
         
+        # Включаем расширяемые сегменты для уменьшения фрагментации
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+        
         # ПОЛНАЯ очистка GPU памяти перед созданием модели
         print("🧹 Выполняю полную очистку GPU памяти...")
         clear_gpu_memory_completely()
@@ -586,34 +580,45 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             print(f"📊 Общая память: {gpu_memory:.2f} GB")
             print(f"📊 Доступно: {free_memory:.2f} GB")
             
-            # Определяем оптимальные параметры на основе доступной памяти
-            if gpu_memory >= 15.0:  # 16GB карта
-                optimal_batch_size = 1  # Минимальный для экономии памяти
-                optimal_input_size = 32  # Уменьшено
-                optimal_horizon = 12  # Уменьшено
-                default_model = 'qwen2-0.5b'  # Современная SLM 2024
-                print("⚡ Режим: 16GB VRAM - используется лёгкая SLM Qwen2-0.5B")
-            elif gpu_memory >= 12.0:  # 12-15GB карта
+            # Реально свободная память = total - уже выделено другими процессами
+            real_allocated = torch.cuda.memory_allocated(0) / 1024**3
+            real_free = gpu_memory - real_allocated
+            print(f"📊 Реально свободно GPU: {real_free:.2f}GB (выделено={real_allocated:.2f}GB)")
+            
+            # Определяем параметры исходя из РЕАЛЬНО свободной памяти
+            # Qwen2-0.5B: ~1GB fp16 + gradients + activations
+            # mapping_layer зависит от patch_len и input_size:
+            #   params = (input_size/patch_len * patch_len) * d_model  -> минимизируем input_size
+            if real_free >= 10.0:
                 optimal_batch_size = 1
-                optimal_input_size = 32
-                optimal_horizon = 12
+                optimal_input_size = 16   # Уменьшено с 32
+                optimal_llm_layers = 2    # Ограничиваем слои LLM
+                optimal_horizon = 6
                 default_model = 'qwen2-0.5b'
-                print("⚡ Режим: 12GB+ VRAM - SLM Qwen2-0.5B")
-            elif gpu_memory >= 8.0:  # 8-12GB карта
+                print("⚡ Режим: 10GB+ свободно - Qwen2-0.5B, input=16")
+            elif real_free >= 6.0:
                 optimal_batch_size = 1
-                optimal_input_size = 24
-                optimal_horizon = 12
+                optimal_input_size = 8
+                optimal_llm_layers = 1
+                optimal_horizon = 4
                 default_model = 'qwen2-0.5b'
-                print("⚡ Режим: 8GB+ VRAM - SLM Qwen2-0.5B")
-            else:  # Меньше 8GB
+                print("⚡ Режим: 6GB+ свободно - Qwen2-0.5B, input=8")
+            elif real_free >= 3.0:
                 optimal_batch_size = 1
-                optimal_input_size = 16
-                optimal_horizon = 8
+                optimal_input_size = 4
+                optimal_llm_layers = 1
+                optimal_horizon = 2
                 default_model = 'qwen2-0.5b'
-                print("⚡ Режим: <8GB VRAM - SLM Qwen2-0.5B")
+                print("⚡ Режим: 3GB+ свободно - Qwen2-0.5B, input=4 (минимальный режим)")
+            else:
+                raise RuntimeError(
+                    f"Недостаточно GPU памяти: свободно {real_free:.2f}GB, "
+                    f"нужно минимум 3GB. Закройте другие GPU-процессы."
+                )
         else:
             optimal_batch_size = 2
             optimal_input_size = 48
+            optimal_llm_layers = 2
             optimal_horizon = 24
             default_model = 'phi-1.5'
             gpu_memory = 0.0
@@ -630,9 +635,11 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             # Генерация промпта
             prompt = self._generate_prompt(data, task='forecast')
             
-            # Оптимизированные параметры для RTX 4070 Ti Super (16GB VRAM)
+            # Параметры модели
             horizon = max(1, min(len(data) // 10, optimal_horizon))
             input_size = min(len(data) - horizon, optimal_input_size)
+            input_size = max(input_size, 2)  # минимум 2
+            llm_layers = optimal_llm_layers
             
             # Выбор модели на основе параметра
             # Современные Small Language Models (SLM) 2024-2025
@@ -712,7 +719,7 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 print(f"      - phi3-mini (3.8B, лучшая точность)")
             
             print(f"📊 NeuralForecast: Модель={llm_model_name}, d_llm={d_llm_value}")
-            print(f"📊 Параметры: batch_size={optimal_batch_size}, input_size={input_size}, horizon={horizon}")
+            print(f"📊 Параметры: batch_size={optimal_batch_size}, input_size={input_size}, horizon={horizon}, llm_layers={llm_layers}")
             print(f"📊 Устройство: GPU (CUDA)")
             
             # Создаем модель TimeLLM для NeuralForecast
@@ -729,36 +736,37 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             # Для production качества используйте max_steps=500-1000 в отдельном скрипте
             api_max_steps = 20  # Было 100 - слишком долго для API!
             
+            # Patch параметры: маленький patch_len снижает размер mapping_layer
+            patch_len = min(input_size // 2, 4)  # 4 по умолчанию (было 16)
+            patch_len = max(patch_len, 1)
+            stride = patch_len  # без перекрытий — меньше памяти
+            
+            # Общие kwargs
+            timellm_kwargs = dict(
+                h=horizon,
+                input_size=input_size,
+                llm=llm_model_name,
+                llm_layers=llm_layers,
+                d_llm=d_llm_value,
+                patch_len=patch_len,
+                stride=stride,
+                prompt_prefix=prompt,
+                learning_rate=5e-3,
+                batch_size=optimal_batch_size,
+                max_steps=api_max_steps,
+                random_seed=42,
+            )
+            
             if use_early_stop:
-                # С early stopping (для больших данных)
-                timellm_model = NF_TimeLLM(
-                    h=horizon,
-                    input_size=input_size,
-                    llm=llm_model_name,
-                    d_llm=d_llm_value,
-                    prompt_prefix=prompt,
-                    learning_rate=5e-3,  # Увеличен для очень быстрого обучения
-                    batch_size=optimal_batch_size,
-                    max_steps=api_max_steps,
+                timellm_kwargs.update(dict(
                     val_check_steps=10,
                     early_stop_patience_steps=2,
-                    random_seed=42
-                )
-                print(f"⚙️  Параметры обучения: max_steps={api_max_steps}, early_stop=enabled")
+                ))
+                timellm_model = NF_TimeLLM(**timellm_kwargs)
+                print(f"⚙️  Параметры обучения: max_steps={api_max_steps}, patch_len={patch_len}, llm_layers={llm_layers}, early_stop=enabled")
             else:
-                # Без early stopping (для маленьких данных)
-                timellm_model = NF_TimeLLM(
-                    h=horizon,
-                    input_size=input_size,
-                    llm=llm_model_name,
-                    d_llm=d_llm_value,
-                    prompt_prefix=prompt,
-                    learning_rate=5e-3,  # Увеличен для очень быстрого обучения
-                    batch_size=optimal_batch_size,
-                    max_steps=api_max_steps,
-                    random_seed=42
-                )
-                print(f"⚙️  Параметры обучения: max_steps={api_max_steps} (быстрый режим для API)")
+                timellm_model = NF_TimeLLM(**timellm_kwargs)
+                print(f"⚙️  Параметры обучения: max_steps={api_max_steps}, patch_len={patch_len}, llm_layers={llm_layers} (быстрый режим для API)")
             
             print(f"   ⚠️  ВАЖНО: Для качественного прогноза обучайте модель отдельно с max_steps=500-1000")
             print(f"   Текущий режим оптимизирован для быстрого отклика API (<2 мин)")
