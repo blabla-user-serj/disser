@@ -531,16 +531,25 @@ class LLMExpert:
    • Отклонение: {deviation_from_trend:+.2f}"""
 
         # Добавляем внешний контекст если есть - ЭТО КЛЮЧЕВАЯ ЧАСТЬ
-        if key_facts and len(key_facts) > 0:
+        has_context = (key_facts and len(key_facts) > 0) or (web_context and len(web_context.strip()) > 0)
+        if has_context:
             prompt += f"""
 
 🌐 ВНЕШНИЙ КОНТЕКСТ (ОБЯЗАТЕЛЬНО УЧИТЫВАТЬ!):
 """
-            for i, fact in enumerate(key_facts[:7], 1):
-                # Ограничиваем длину факта
-                fact_text = fact[:200] + "..." if len(fact) > 200 else fact
-                prompt += f"   {i}. {fact_text}\n"
-            
+            # Сначала выводим ключевые факты
+            if key_facts and len(key_facts) > 0:
+                for i, fact in enumerate(key_facts[:7], 1):
+                    fact_text = fact[:200] + "..." if len(fact) > 200 else fact
+                    prompt += f"   {i}. {fact_text}\n"
+
+            # Добавляем фрагмент полного текста источников (до 1500 символов)
+            if web_context and len(web_context.strip()) > 0:
+                ctx_snippet = web_context.strip()[:1500]
+                if len(web_context.strip()) > 1500:
+                    ctx_snippet += "..."
+                prompt += f"\n📄 ТЕКСТ ИСТОЧНИКОВ:\n{ctx_snippet}\n"
+
             prompt += """
    ⚡ ВАЖНО: Используй информацию из контекста для корректировки!
    Если источники указывают на рост/снижение - учти это в коэффициентах."""
@@ -556,7 +565,7 @@ class LLMExpert:
 
 1. Проанализируй соответствие прогноза историческому тренду
 2. Оцени реалистичность скачка {jump_pct:+.1f}% от последнего значения
-3. {"Учти информацию из внешнего контекста!" if key_facts else "Внешний контекст не предоставлен - опирайся на статистику."}
+3. {"Учти информацию из внешнего контекста!" if has_context else "Внешний контекст не предоставлен - опирайся на статистику."}
 4. Для каждой точки определи: завышена, занижена или адекватна
 
 ОТВЕТ (строго JSON, без дополнительного текста):
