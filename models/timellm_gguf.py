@@ -589,31 +589,33 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             # Qwen2-0.5B: ~1GB fp16 + gradients + activations
             # mapping_layer зависит от patch_len и input_size:
             #   params = (input_size/patch_len * patch_len) * d_model  -> минимизируем input_size
-            if real_free >= 10.0:
+            # Модель выбирается позже из self.neuralforecast_model
+            # Здесь задаём только размеры входов
+            if real_free >= 6.0:
                 optimal_batch_size = 1
-                optimal_input_size = 16   # Уменьшено с 32
-                optimal_llm_layers = 2    # Ограничиваем слои LLM
+                optimal_input_size = 16
+                optimal_llm_layers = 2
                 optimal_horizon = 6
-                default_model = 'qwen2-0.5b'
-                print("⚡ Режим: 10GB+ свободно - Qwen2-0.5B, input=16")
-            elif real_free >= 6.0:
+                default_model = 'gpt2'  # vocab=50K → mapping_layer ~50MB вместо 620MB
+                print("⚡ Режим: 6GB+ свободно, input=16")
+            elif real_free >= 3.0:
                 optimal_batch_size = 1
                 optimal_input_size = 8
                 optimal_llm_layers = 1
                 optimal_horizon = 4
-                default_model = 'qwen2-0.5b'
-                print("⚡ Режим: 6GB+ свободно - Qwen2-0.5B, input=8")
-            elif real_free >= 3.0:
+                default_model = 'gpt2'
+                print("⚡ Режим: 3GB+ свободно, input=8")
+            elif real_free >= 1.5:
                 optimal_batch_size = 1
                 optimal_input_size = 4
                 optimal_llm_layers = 1
                 optimal_horizon = 2
-                default_model = 'qwen2-0.5b'
-                print("⚡ Режим: 3GB+ свободно - Qwen2-0.5B, input=4 (минимальный режим)")
+                default_model = 'distilgpt2'
+                print("⚡ Режим: 1.5GB+ свободно, input=4 (минимальный)")
             else:
                 raise RuntimeError(
                     f"Недостаточно GPU памяти: свободно {real_free:.2f}GB, "
-                    f"нужно минимум 3GB. Закройте другие GPU-процессы."
+                    f"нужно минимум 1.5GB."
                 )
         else:
             optimal_batch_size = 2
@@ -647,56 +649,65 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             
             model_choice = self.neuralforecast_model or default_model
             
+            # vocab_size модели определяет размер mapping_layer:
+            #   mapping_layer = Linear(vocab_size, 1024) — захардкожено в NeuralForecast
+            #   gpt2:      vocab=50257  → 50M  params (~200MB)
+            #   distilgpt2:vocab=50257  → 50M  params (~200MB)
+            #   Qwen2-0.5B:vocab=151936 → 155M params (~620MB) — слишком много!
             model_configs = {
-                # 🟢 Современные SLM 2024-2025 (РЕКОМЕНДУЕТСЯ)
-                'qwen2-0.5b': {
-                    'name': 'Qwen/Qwen2-0.5B',
-                    'd_llm': 896,  # hidden_size для Qwen2-0.5B
-                    'description': '🟢 Qwen2-0.5B (500M) - Топ SLM 2024! Самая быстрая, 2GB VRAM'
-                },
-                'llama3.2-1b': {
-                    'name': 'meta-llama/Llama-3.2-1B',
-                    'd_llm': 2048,
-                    'description': '🟢 Llama-3.2-1B (1B) - Meta SLM 2024, быстрая, 3GB VRAM'
-                },
-                'gemma-2b': {
-                    'name': 'google/gemma-2b',
-                    'd_llm': 2048,
-                    'description': '🟢 Gemma-2B (2B) - Google SLM 2024, баланс скорость/качество, 4GB VRAM'
-                },
-                'phi3-mini': {
-                    'name': 'microsoft/Phi-3-mini-4k-instruct',
-                    'd_llm': 3072,
-                    'description': '🟡 Phi-3-mini (3.8B) - Лучшая точность SLM 2024, 6GB VRAM'
-                },
-                'stablelm-zephyr-3b': {
-                    'name': 'stabilityai/stablelm-zephyr-3b',
-                    'd_llm': 2560,
-                    'description': '🟡 StableLM-Zephyr-3B (3B) - Стабильная SLM, 5GB VRAM'
-                },
-                
-                # 🟡 Классические (для совместимости)
                 'gpt2': {
                     'name': 'gpt2',
                     'd_llm': 768,
-                    'description': '🟡 GPT-2 (124M) - Классика 2019, очень быстро, 1GB VRAM'
+                    'vocab_size': 50257,
+                    'description': '🟢 GPT-2 (124M) - рекомендуется, vocab=50K, mapping_layer ~200MB'
                 },
                 'distilgpt2': {
                     'name': 'distilgpt2',
                     'd_llm': 768,
-                    'description': '🟡 DistilGPT-2 (82M) - Ещё легче GPT-2, <1GB VRAM'
+                    'vocab_size': 50257,
+                    'description': '🟢 DistilGPT-2 (82M) - лёгкая, vocab=50K, mapping_layer ~200MB'
                 },
-                
-                # 🔴 Тяжёлые (не рекомендуется для API)
+                'qwen2-0.5b': {
+                    'name': 'Qwen/Qwen2-0.5B',
+                    'd_llm': 896,
+                    'vocab_size': 151936,
+                    'description': '🟡 Qwen2-0.5B (500M) - vocab=152K → mapping_layer 620MB, нужно 8GB+'
+                },
+                'llama3.2-1b': {
+                    'name': 'meta-llama/Llama-3.2-1B',
+                    'd_llm': 2048,
+                    'vocab_size': 128256,
+                    'description': '🟡 Llama-3.2-1B (1B) - vocab=128K, нужно 8GB+'
+                },
+                'gemma-2b': {
+                    'name': 'google/gemma-2b',
+                    'd_llm': 2048,
+                    'vocab_size': 256000,
+                    'description': '🔴 Gemma-2B (2B) - vocab=256K → mapping_layer 1GB, нужно 12GB+'
+                },
+                'phi3-mini': {
+                    'name': 'microsoft/Phi-3-mini-4k-instruct',
+                    'd_llm': 3072,
+                    'vocab_size': 32064,
+                    'description': '🟢 Phi-3-mini (3.8B) - vocab=32K, mapping_layer ~130MB, но модель 6GB'
+                },
+                'stablelm-zephyr-3b': {
+                    'name': 'stabilityai/stablelm-zephyr-3b',
+                    'd_llm': 2560,
+                    'vocab_size': 50257,
+                    'description': '🟡 StableLM-Zephyr-3B (3B) - vocab=50K, но модель 5GB'
+                },
                 'tinyllama': {
                     'name': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
                     'd_llm': 2048,
-                    'description': '🔴 TinyLlama (1.1B) - Старая 2023, медленнее новых SLM'
+                    'vocab_size': 32000,
+                    'description': '🟡 TinyLlama (1.1B) - vocab=32K, mapping_layer ~130MB'
                 },
                 'phi-1.5': {
                     'name': 'microsoft/phi-1.5',
                     'd_llm': 2048,
-                    'description': '🔴 Phi-1.5 (1.3B) - Устарела, используйте Phi-3-mini'
+                    'vocab_size': 50257,
+                    'description': '🟡 Phi-1.5 (1.3B) - vocab=50K'
                 }
             }
             
@@ -707,16 +718,21 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             config = model_configs[model_choice]
             llm_model_name = config['name']
             d_llm_value = config['d_llm']
+            vocab_size = config.get('vocab_size', 50257)
             
-            print(f"🤖 Выбрана SLM: {config['description']}")
+            # Если выбрана модель с большим vocab -> mapping_layer будет большим
+            mapping_mb = vocab_size * 1024 * 4 / 1024**2
+            print(f"🤖 Выбрана модель: {config['description']}")
+            print(f"📊 mapping_layer размер: ~{mapping_mb:.0f}MB (vocab={vocab_size:,})")
             
-            # Предупреждение для устаревших моделей
-            if model_choice in ['phi-1.5', 'tinyllama']:
-                print(f"⚠️  Модель {model_choice} устарела!")
-                print(f"   💡 Рекомендуется использовать современные SLM 2024:")
-                print(f"      - qwen2-0.5b (500M, самая быстрая)")
-                print(f"      - llama3.2-1b (1B, от Meta)")
-                print(f"      - phi3-mini (3.8B, лучшая точность)")
+            # Автозамена модели если mapping_layer слишком большой
+            if mapping_mb > 300 and real_free < 10.0:
+                print(f"⚠️  mapping_layer={mapping_mb:.0f}MB слишком большой для {real_free:.1f}GB свободной памяти")
+                print(f"🔄 Автозамена на gpt2 (vocab=50K, mapping_layer ~200MB)")
+                model_choice = 'gpt2'
+                config = model_configs['gpt2']
+                llm_model_name = config['name']
+                d_llm_value = config['d_llm']
             
             print(f"📊 NeuralForecast: Модель={llm_model_name}, d_llm={d_llm_value}")
             print(f"📊 Параметры: batch_size={optimal_batch_size}, input_size={input_size}, horizon={horizon}, llm_layers={llm_layers}")
@@ -742,14 +758,23 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             stride = patch_len  # без перекрытий — меньше памяти
             
             # Общие kwargs
+            # enc_in=1: univariate ряд — главная экономия активаций
+            # windows_batch_size=1: вместо дефолтных 1024 — главная причина OOM
+            # d_model=16: уменьшаем внутреннюю размерность
             timellm_kwargs = dict(
                 h=horizon,
                 input_size=input_size,
                 llm=llm_model_name,
                 llm_num_hidden_layers=llm_layers,
                 d_llm=d_llm_value,
+                d_model=16,
+                d_ff=64,
+                enc_in=1,
+                dec_in=1,
                 patch_len=patch_len,
                 stride=stride,
+                windows_batch_size=1,
+                inference_windows_batch_size=1,
                 prompt_prefix=prompt,
                 learning_rate=5e-3,
                 batch_size=optimal_batch_size,
@@ -763,10 +788,10 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                     early_stop_patience_steps=2,
                 ))
                 timellm_model = NF_TimeLLM(**timellm_kwargs)
-                print(f"⚙️  Параметры обучения: max_steps={api_max_steps}, patch_len={patch_len}, llm_layers={llm_layers}, early_stop=enabled")
+                print(f"⚙️  Параметры: max_steps={api_max_steps}, patch_len={patch_len}, llm_layers={llm_layers}, enc_in=1, windows_batch=1, early_stop=enabled")
             else:
                 timellm_model = NF_TimeLLM(**timellm_kwargs)
-                print(f"⚙️  Параметры обучения: max_steps={api_max_steps}, patch_len={patch_len}, llm_layers={llm_layers} (быстрый режим для API)")
+                print(f"⚙️  Параметры: max_steps={api_max_steps}, patch_len={patch_len}, llm_layers={llm_layers}, enc_in=1, windows_batch=1")
             
             print(f"   ⚠️  ВАЖНО: Для качественного прогноза обучайте модель отдельно с max_steps=500-1000")
             print(f"   Текущий режим оптимизирован для быстрого отклика API (<2 мин)")
