@@ -99,9 +99,9 @@ class HybridModel:
         # Инициализация весов с приоритетом SARIMA-XS для коротких рядов
         # SARIMA-XS показывает лучшую устойчивость на экстремально коротких рядах (n=5-20)
         self.weights = {
-            'sarima': 0.5,    # Больший начальный вес для SARIMA-XS
+            'sarima': 0.6,    # Больший начальный вес для SARIMA-XS
             'xgboost': 0.3,
-            'timellm': 0.2
+            'timellm': 0.1
         }
         
         self.error_history = {
