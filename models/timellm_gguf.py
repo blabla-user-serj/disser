@@ -767,8 +767,9 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 llm=llm_model_name,
                 llm_num_hidden_layers=llm_layers,
                 d_llm=d_llm_value,
-                d_model=16,
-                d_ff=64,
+                # d_model и d_ff оставляем дефолтными (32/128):
+                # d_ff используется как d_keys в ReprogrammingLayer —
+                # изменение ломает матричные размерности
                 enc_in=1,
                 dec_in=1,
                 patch_len=patch_len,
