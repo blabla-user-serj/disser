@@ -746,7 +746,7 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 h=horizon,
                 input_size=input_size,
                 llm=llm_model_name,
-                llm_layers=llm_layers,
+                llm_num_hidden_layers=llm_layers,
                 d_llm=d_llm_value,
                 patch_len=patch_len,
                 stride=stride,
