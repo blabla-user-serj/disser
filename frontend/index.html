@@ -200,9 +200,13 @@
                 document.getElementById('forecastBtn').textContent = '⏳ Прогнозирование...';
                 document.getElementById('forecastBtn').disabled = true;
 
-                // Создаём AbortController для возможности отмены (timeout 5 минут для быстрого режима)
+                // Таймаут: 5 мин для лёгких моделей, 15 мин для тяжёлых (Phi, 1.7B+)
+                const heavyModels = ['phi3-mini', 'smollm2-1.7b', 'stablelm-zephyr-3b',
+                                     'llama3.2-1b', 'gemma-2b', 'tinyllama', 'phi-1.5'];
+                const isHeavy = heavyModels.includes(slmModel);
+                const timeoutMs = isHeavy ? 900000 : 300000; // 15 или 5 минут
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 минут
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
                 const response = await fetch(`${API_URL}/forecast`, {
                     method: 'POST',
@@ -222,7 +226,8 @@
                 }
             } catch (error) {
                 if (error.name === 'AbortError') {
-                    alert('⏱️ Превышено время ожидания (5 минут).\n\nTimeLLM может требовать больше времени.\nПопробуйте:\n- Модель SARIMA или XGBoost (результат за 30 сек)\n- Гибридную модель (комбинирует все модели)\n- Уменьшить количество данных для TimeLLM');
+                    const tMin = isHeavy ? 15 : 5;
+                    alert(`⏱️ Превышено время ожидания (${tMin} минут).\n\nДля модели "${slmModel}" первый запуск включает скачивание весов.\nПопробуйте:\n- SmolLM2-135M или DistilGPT-2 (быстрый старт)\n- SARIMA или XGBoost (результат за 30 сек)`);
                 } else {
                     alert(`Ошибка: ${error.message}`);
                 }
