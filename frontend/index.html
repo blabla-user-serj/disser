@@ -45,16 +45,28 @@
                 <div class="config-item" id="slmSelectContainer" style="display: none;">
                     <label for="slmSelect">SLM модель:</label>
                     <select id="slmSelect">
-                        <option value="qwen2-0.5b">🟢 Qwen2-0.5B (500M) - Рекомендуется!</option>
-                        <option value="llama3.2-1b">🟢 Llama-3.2-1B (1B) - Meta 2024</option>
-                        <option value="gemma-2b">🟢 Gemma-2B (2B) - Google 2024</option>
-                        <option value="phi3-mini">🟡 Phi-3-mini (3.8B) - Max точность</option>
-                        <option value="stablelm-zephyr-3b">🟡 StableLM-3B (3B)</option>
-                        <option value="gpt2">🟡 GPT-2 (124M) - Классика</option>
-                        <option value="distilgpt2">🟡 DistilGPT-2 (82M) - Быстро</option>
+                        <optgroup label="⭐ SmolLM2 2025 (рекомендуется, vocab=49K)">
+                            <option value="smollm2-360m" selected>⭐ SmolLM2-360M (360M) - Рекомендуется!</option>
+                            <option value="smollm2-135m">⭐ SmolLM2-135M (135M) - Быстрейшая</option>
+                            <option value="smollm2-1.7b">⭐ SmolLM2-1.7B (1.7B) - Лучшее качество</option>
+                        </optgroup>
+                        <optgroup label="🟢 Классика (надёжный fallback)">
+                            <option value="gpt2">🟢 GPT-2 (124M) - Классика</option>
+                            <option value="distilgpt2">🟢 DistilGPT-2 (82M) - Самая быстрая</option>
+                        </optgroup>
+                        <optgroup label="🟡 Другие (авто-замена при нехватке памяти)">
+                            <option value="phi3-mini">🟡 Phi-3-mini (3.8B) - vocab=32K</option>
+                            <option value="tinyllama">🟡 TinyLlama (1.1B) - vocab=32K</option>
+                            <option value="phi-1.5">🟡 Phi-1.5 (1.3B) - vocab=50K</option>
+                            <option value="stablelm-zephyr-3b">🟡 StableLM-3B (3B)</option>
+                            <option value="qwen2-0.5b">🟡 Qwen2-0.5B (500M) - vocab=152K</option>
+                            <option value="qwen2.5-0.5b">🟡 Qwen2.5-0.5B (500M) - vocab=152K</option>
+                            <option value="llama3.2-1b">🟡 Llama-3.2-1B (1B) - vocab=128K</option>
+                            <option value="gemma-2b">🟡 Gemma-2B (2B) - vocab=256K</option>
+                        </optgroup>
                     </select>
                     <small id="slmHelpText" style="color: #7f8c8d; margin-top: 3px; display: block;">
-                        💡 Для RTX 4070 Ti Super рекомендуется Qwen2-0.5B или Llama-3.2-1B
+                        ⭐ SmolLM2 (2025): vocab=49K → mapping_layer ~200MB вместо 620MB у Qwen
                     </small>
                 </div>
                 
