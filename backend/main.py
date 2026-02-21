@@ -594,7 +594,10 @@ async def forecast(
             backend = 'simple'  # Безопасный режим по умолчанию
             
             # Если пользователь явно выбрал NeuralForecast модель - используем neuralforecast
-            if llm_model in ['qwen2-0.5b', 'llama3.2-1b', 'gemma-2b', 'phi3-mini', 'stablelm-zephyr-3b']:
+            if llm_model in ['smollm2-135m', 'smollm2-360m', 'smollm2-1.7b',
+                             'qwen2-0.5b', 'qwen2.5-0.5b', 'llama3.2-1b',
+                             'gemma-2b', 'phi3-mini', 'stablelm-zephyr-3b',
+                             'tinyllama', 'phi-1.5', 'gpt2', 'distilgpt2']:
                 if torch.cuda.is_available():
                     backend = 'neuralforecast'
                     print(f"✅ Используется NeuralForecast с {llm_model}")
@@ -959,15 +962,21 @@ async def models_info():
             "description": "Трансформер с патчингом на базе современных SLM 2024-2025",
             "features": ["Patch encoding", "Скрытые представления", "Доверительные интервалы"],
             "available_slm": {
-                "qwen2-0.5b": "🟢 Qwen2-0.5B (500M) - Рекомендуется! Топ SLM 2024, самая быстрая, 2GB VRAM",
-                "llama3.2-1b": "🟢 Llama-3.2-1B (1B) - Meta SLM 2024, быстрая, 3GB VRAM",
-                "gemma-2b": "🟢 Gemma-2B (2B) - Google SLM 2024, баланс скорость/качество, 4GB VRAM",
-                "phi3-mini": "🟡 Phi-3-mini (3.8B) - Лучшая точность SLM 2024, 6GB VRAM",
-                "stablelm-zephyr-3b": "🟡 StableLM-Zephyr-3B (3B) - Стабильная SLM, 5GB VRAM",
-                "gpt2": "🟡 GPT-2 (124M) - Классика 2019, очень быстро, 1GB VRAM",
-                "distilgpt2": "🟡 DistilGPT-2 (82M) - Ещё легче GPT-2, <1GB VRAM"
+                "smollm2-135m": "⭐ SmolLM2-135M (135M, 2025) - быстрейшая, vocab=49K, <1GB VRAM",
+                "smollm2-360m": "⭐ SmolLM2-360M (360M, 2025) - РЕКОМЕНДУЕТСЯ, vocab=49K, 1GB VRAM",
+                "smollm2-1.7b": "⭐ SmolLM2-1.7B (1.7B, 2025) - лучшее качество, vocab=49K, 4GB VRAM",
+                "gpt2": "🟢 GPT-2 (124M) - надёжный fallback, vocab=50K, 1GB VRAM",
+                "distilgpt2": "🟢 DistilGPT-2 (82M) - самая лёгкая, vocab=50K, <1GB VRAM",
+                "phi3-mini": "🟡 Phi-3-mini (3.8B, 2024) - vocab=32K, 6GB VRAM, медленная загрузка",
+                "tinyllama": "🟡 TinyLlama (1.1B) - vocab=32K, 3GB VRAM",
+                "phi-1.5": "🟡 Phi-1.5 (1.3B) - vocab=50K, 3GB VRAM",
+                "qwen2-0.5b": "🟡 Qwen2-0.5B (500M) - vocab=152K, автозамена на smollm2 при <10GB",
+                "qwen2.5-0.5b": "🟡 Qwen2.5-0.5B (500M, 2024) - vocab=152K, автозамена на smollm2 при <10GB",
+                "llama3.2-1b": "🟡 Llama-3.2-1B (1B) - vocab=128K, автозамена на smollm2 при <10GB",
+                "gemma-2b": "🔴 Gemma-2B (2B) - vocab=256K, автозамена на smollm2 при <10GB",
+                "stablelm-zephyr-3b": "🟡 StableLM-Zephyr-3B (3B) - vocab=50K, 5GB VRAM"
             },
-            "default_slm": "qwen2-0.5b",
+            "default_slm": "smollm2-360m",
             "note": "Используйте параметр 'llm_model' в запросе для выбора конкретной SLM"
         },
         "hybrid": {

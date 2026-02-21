@@ -596,22 +596,22 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                 optimal_input_size = 16
                 optimal_llm_layers = 2
                 optimal_horizon = 6
-                default_model = 'gpt2'  # vocab=50K → mapping_layer ~50MB вместо 620MB
-                print("⚡ Режим: 6GB+ свободно, input=16")
+                default_model = 'smollm2-360m'  # SOTA 2025, vocab=49K
+                print("⚡ Режим: 6GB+ свободно, input=16, SmolLM2-360M")
             elif real_free >= 3.0:
                 optimal_batch_size = 1
                 optimal_input_size = 8
                 optimal_llm_layers = 1
                 optimal_horizon = 4
-                default_model = 'gpt2'
-                print("⚡ Режим: 3GB+ свободно, input=8")
+                default_model = 'smollm2-135m'
+                print("⚡ Режим: 3GB+ свободно, input=8, SmolLM2-135M")
             elif real_free >= 1.5:
                 optimal_batch_size = 1
                 optimal_input_size = 4
                 optimal_llm_layers = 1
                 optimal_horizon = 2
                 default_model = 'distilgpt2'
-                print("⚡ Режим: 1.5GB+ свободно, input=4 (минимальный)")
+                print("⚡ Режим: 1.5GB+ свободно, input=4, DistilGPT-2")
             else:
                 raise RuntimeError(
                     f"Недостаточно GPU памяти: свободно {real_free:.2f}GB, "
@@ -651,64 +651,91 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             
             # vocab_size модели определяет размер mapping_layer:
             #   mapping_layer = Linear(vocab_size, 1024) — захардкожено в NeuralForecast
-            #   gpt2:      vocab=50257  → 50M  params (~200MB)
-            #   distilgpt2:vocab=50257  → 50M  params (~200MB)
-            #   Qwen2-0.5B:vocab=151936 → 155M params (~620MB) — слишком много!
+            #   SmolLM2:   vocab=49152  → ~200MB ✔ SOTA 2025
+            #   gpt2:      vocab=50257  → ~200MB ✔
+            #   Qwen2.5:   vocab=151936 → ~620MB ⚠️
             model_configs = {
+                # ⭐ РЕКОМЕНДУЕТСЯ: SmolLM2 (HuggingFace, 2025) - SOTA при малом vocab
+                'smollm2-135m': {
+                    'name': 'HuggingFaceTB/SmolLM2-135M',
+                    'd_llm': 576,
+                    'vocab_size': 49152,
+                    'description': '⭐ SmolLM2-135M (135M, 2025) - быстрейшая, vocab=49K, mapping ~200MB, <1GB VRAM'
+                },
+                'smollm2-360m': {
+                    'name': 'HuggingFaceTB/SmolLM2-360M',
+                    'd_llm': 960,
+                    'vocab_size': 49152,
+                    'description': '⭐ SmolLM2-360M (360M, 2025) - баланс, vocab=49K, mapping ~200MB, 1GB VRAM'
+                },
+                'smollm2-1.7b': {
+                    'name': 'HuggingFaceTB/SmolLM2-1.7B',
+                    'd_llm': 2048,
+                    'vocab_size': 49152,
+                    'description': '⭐ SmolLM2-1.7B (1.7B, 2025) - лучшее качество, vocab=49K, mapping ~200MB, 4GB VRAM'
+                },
+                # Классика - надёжный фоллбэк
                 'gpt2': {
                     'name': 'gpt2',
                     'd_llm': 768,
                     'vocab_size': 50257,
-                    'description': '🟢 GPT-2 (124M) - рекомендуется, vocab=50K, mapping_layer ~200MB'
+                    'description': '🟢 GPT-2 (124M) - надёжный fallback, vocab=50K, mapping ~200MB'
                 },
                 'distilgpt2': {
                     'name': 'distilgpt2',
                     'd_llm': 768,
                     'vocab_size': 50257,
-                    'description': '🟢 DistilGPT-2 (82M) - лёгкая, vocab=50K, mapping_layer ~200MB'
+                    'description': '🟢 DistilGPT-2 (82M) - самая лёгкая, vocab=50K, mapping ~200MB'
                 },
-                'qwen2-0.5b': {
-                    'name': 'Qwen/Qwen2-0.5B',
-                    'd_llm': 896,
-                    'vocab_size': 151936,
-                    'description': '🟡 Qwen2-0.5B (500M) - vocab=152K → mapping_layer 620MB, нужно 8GB+'
-                },
-                'llama3.2-1b': {
-                    'name': 'meta-llama/Llama-3.2-1B',
-                    'd_llm': 2048,
-                    'vocab_size': 128256,
-                    'description': '🟡 Llama-3.2-1B (1B) - vocab=128K, нужно 8GB+'
-                },
-                'gemma-2b': {
-                    'name': 'google/gemma-2b',
-                    'd_llm': 2048,
-                    'vocab_size': 256000,
-                    'description': '🔴 Gemma-2B (2B) - vocab=256K → mapping_layer 1GB, нужно 12GB+'
-                },
+                # Модели с большим vocab (автозамена на gpt2 если памяти <10GB)
                 'phi3-mini': {
                     'name': 'microsoft/Phi-3-mini-4k-instruct',
                     'd_llm': 3072,
                     'vocab_size': 32064,
-                    'description': '🟢 Phi-3-mini (3.8B) - vocab=32K, mapping_layer ~130MB, но модель 6GB'
-                },
-                'stablelm-zephyr-3b': {
-                    'name': 'stabilityai/stablelm-zephyr-3b',
-                    'd_llm': 2560,
-                    'vocab_size': 50257,
-                    'description': '🟡 StableLM-Zephyr-3B (3B) - vocab=50K, но модель 5GB'
+                    'description': '🟡 Phi-3-mini (3.8B, 2024) - vocab=32K, mapping ~130MB, 6GB VRAM, модель скачивается долго'
                 },
                 'tinyllama': {
                     'name': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
                     'd_llm': 2048,
                     'vocab_size': 32000,
-                    'description': '🟡 TinyLlama (1.1B) - vocab=32K, mapping_layer ~130MB'
+                    'description': '🟡 TinyLlama (1.1B) - vocab=32K, mapping ~130MB, 3GB VRAM'
                 },
                 'phi-1.5': {
-                    'name': 'microsoft/phi-1.5',
+                    'name': 'microsoft/phi-1_5',
                     'd_llm': 2048,
+                    'vocab_size': 51200,
+                    'description': '🟡 Phi-1.5 (1.3B) - vocab=50K, mapping ~200MB, 3GB VRAM'
+                },
+                'qwen2-0.5b': {
+                    'name': 'Qwen/Qwen2-0.5B',
+                    'd_llm': 896,
+                    'vocab_size': 151936,
+                    'description': '🟡 Qwen2-0.5B (500M) - vocab=152K → mapping 620MB, нужно 8GB+'
+                },
+                'qwen2.5-0.5b': {
+                    'name': 'Qwen/Qwen2.5-0.5B',
+                    'd_llm': 896,
+                    'vocab_size': 151936,
+                    'description': '🟡 Qwen2.5-0.5B (500M, 2024) - vocab=152K → mapping 620MB, нужно 8GB+'
+                },
+                'llama3.2-1b': {
+                    'name': 'meta-llama/Llama-3.2-1B',
+                    'd_llm': 2048,
+                    'vocab_size': 128256,
+                    'description': '🟡 Llama-3.2-1B (1B) - vocab=128K → mapping 520MB, нужно 8GB+'
+                },
+                'stablelm-zephyr-3b': {
+                    'name': 'stabilityai/stablelm-zephyr-3b',
+                    'd_llm': 2560,
                     'vocab_size': 50257,
-                    'description': '🟡 Phi-1.5 (1.3B) - vocab=50K'
-                }
+                    'description': '🟡 StableLM-Zephyr-3B (3B) - vocab=50K, mapping ~200MB, 5GB VRAM'
+                },
+                'gemma-2b': {
+                    'name': 'google/gemma-2b',
+                    'd_llm': 2048,
+                    'vocab_size': 256000,
+                    'description': '🔴 Gemma-2B (2B) - vocab=256K → mapping 1GB, нужно 12GB+'
+                },
             }
             
             if model_choice not in model_configs:
