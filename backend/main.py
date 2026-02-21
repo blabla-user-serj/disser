@@ -628,7 +628,11 @@ async def forecast(
             raise HTTPException(400, f"Неизвестная модель: {model_type}")
         
         try:
-            model.fit(values_array)
+            # Передаём steps в fit для TimeLLM и Hybrid (обучение на нужном горизонте)
+            if model_type in ('timellm', 'hybrid'):
+                model.fit(values_array, steps=steps)
+            else:
+                model.fit(values_array)
         except Exception as e:
             print(f"\n❌ Ошибка при обучении модели {model_type}:")
             print(f"   {str(e)}")

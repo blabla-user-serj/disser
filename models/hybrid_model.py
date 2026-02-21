@@ -503,14 +503,14 @@ class HybridModel:
                 print("🔄 Этап 2: Обучение TimeLLM на полных данных...")
             
             self.timellm = self._create_timellm()
-            self.timellm.fit(self.data_robust)
+            self.timellm.fit(self.data_robust, steps=self._fit_steps)
             print("✅ TimeLLM обучена на полных данных")
             
         except Exception as e:
             print(f"⚠️ TimeLLM ошибка: {e}")
             errors['timellm'] = float('inf')
             self.timellm = TimeLLM(llm_backend="simple")
-            self.timellm.fit(self.data_robust)
+            self.timellm.fit(self.data_robust, steps=self._fit_steps)
         
         # ==================== Шаг 5: Обновление весов ====================
         if need_validation:
