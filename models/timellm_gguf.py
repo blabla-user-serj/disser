@@ -441,14 +441,16 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
         
         return forecast
     
-    def fit(self, data, freq='D'):
+    def fit(self, data, freq='D', steps=None):
         """
         Обучение модели с автоматическим fallback при OOM
         
         Args:
             data: numpy array с историческими данными
             freq: частота данных ('D'=daily, 'H'=hourly, 'M'=monthly, и т.д.)
+            steps: желаемый горизонт прогноза (если None — определяется автоматически)
         """
+        self.requested_steps = steps  # сохраняем для использования в predict
         global _OOM_FALLBACK_TO_SIMPLE
         
         self.data = data
@@ -638,7 +640,17 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
             prompt = self._generate_prompt(data, task='forecast')
             
             # Параметры модели
-            horizon = max(1, min(len(data) // 10, optimal_horizon))
+            # Вариант 2: используем steps пользователя как horizon (без экстраполяции)
+            if steps is not None and steps >= 1:
+                # Ограничиваем горизонт разумным максимумом
+                max_horizon = max(1, len(data) // 3)  # не более 1/3 данных
+                horizon = min(steps, max_horizon, optimal_horizon)
+                if horizon < steps:
+                    print(f"⚠️  Запрошено {steps} шагов, обучаем на horizon={horizon} (макс для {len(data)} точек)")
+                else:
+                    print(f"✅ Горизонт обучения = {horizon} шагов (запрошено пользователем)")
+            else:
+                horizon = max(1, min(len(data) // 10, optimal_horizon))
             input_size = min(len(data) - horizon, optimal_input_size)
             input_size = max(input_size, 2)  # минимум 2
             llm_layers = optimal_llm_layers
@@ -1017,18 +1029,34 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                     # Получаем прогноз из результата
                     model_forecast = forecast_df['TimeLLM'].values
                     
-                    # Если запрошено больше чем обучено, расширяем прогноз
-                    if steps > len(model_forecast):
-                        print(f"⚠️  Запрошено {steps} шагов, но модель обучена на {len(model_forecast)}")
-                        print(f"   Использую простую экстраполяцию для дополнительных шагов")
-                        # Используем последний тренд для экстраполяции
-                        trend = np.mean(np.diff(model_forecast[-5:])) if len(model_forecast) >= 5 else 0
-                        extra_steps = steps - len(model_forecast)
-                        extra_forecast = np.array([model_forecast[-1] + trend * (i+1) for i in range(extra_steps)])
-                        forecast = np.concatenate([model_forecast, extra_forecast])
-                    else:
-                        # Берём нужное количество шагов
+                    if steps <= len(model_forecast):
+                        # Горизонт модели достаточен — берём нужное количество
                         forecast = model_forecast[:steps]
+                    else:
+                        # Горизонт модели меньше запрошенного:
+                        # Rolling-window: сдвигаем окно данных и дополняем прогноз
+                        print(f"🔄 Rolling-window: horizon={len(model_forecast)}, нужно {steps} шагов")
+                        forecast = list(model_forecast)
+                        rolling_data = list(self.data)
+                        remaining = steps - len(model_forecast)
+                        step_done = len(model_forecast)
+                        while remaining > 0:
+                            # Сдвигаем окно: добавляем уже предсказанные значения
+                            rolling_data_arr = np.array(rolling_data + forecast[:step_done])
+                            roll_df = pd.DataFrame({
+                                'unique_id': ['series_1'] * len(rolling_data_arr),
+                                'ds': pd.date_range(start='2020-01-01', periods=len(rolling_data_arr), freq=self.freq or 'D'),
+                                'y': rolling_data_arr
+                            })
+                            with torch.no_grad():
+                                roll_result = self.model.predict(df=roll_df)
+                                roll_fc = roll_result['TimeLLM'].values
+                            take = min(len(roll_fc), remaining)
+                            forecast.extend(roll_fc[:take].tolist())
+                            remaining -= take
+                            step_done += take
+                            print(f"   Rolling: добавлено {take} шагов, осталось {remaining}")
+                        forecast = np.array(forecast[:steps])
                 
                 # ПОЛНАЯ очистка GPU памяти после предсказания
                 clear_gpu_memory_completely()
