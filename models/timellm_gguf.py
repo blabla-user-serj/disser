@@ -510,7 +510,7 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                     try:
                         print(f"🚀 Используется NeuralForecast с современными SLM 2024-2025")
                         
-                        self._fit_neuralforecast(data, freq)
+                        self._fit_neuralforecast(data, freq, steps=self.requested_steps)
                         print("✓ Используется NeuralForecast.TimeLLM с SLM")
                         
                     except RuntimeError as e:
@@ -543,7 +543,7 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
         
         return self
     
-    def _fit_neuralforecast(self, data, freq):
+    def _fit_neuralforecast(self, data, freq, steps=None):
         """Обучение через NeuralForecast.TimeLLM"""
         from neuralforecast import NeuralForecast
         from neuralforecast.models import TimeLLM as NF_TimeLLM
