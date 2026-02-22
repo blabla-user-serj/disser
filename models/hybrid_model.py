@@ -393,7 +393,7 @@ class HybridModel:
     
     # ==================== ОБУЧЕНИЕ ====================
     
-    def fit(self, data):
+    def fit(self, data, steps=None):
         """
         Обучение гибридной модели с робастной предобработкой
         
@@ -403,6 +403,7 @@ class HybridModel:
         3. Валидация и расчёт ошибок
         4. Обновление весов EWA (Формулы 2.5, 2.7, 2.11)
         """
+        self._fit_steps = steps
         self.data = data
         n = len(data)
         
