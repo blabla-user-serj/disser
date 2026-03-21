@@ -27,6 +27,10 @@ tqdm>=4.65.0
 # YandexGPT Expert (OpenAI-совместимый API)
 openai>=1.0.0
 
+# Парсинг документов для LLM-эксперта
+pypdf>=4.0.0
+python-docx>=1.1.0
+
 # Опционально для графиков
 matplotlib>=3.7.0
 plotly>=5.17.0

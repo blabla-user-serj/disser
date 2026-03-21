@@ -168,6 +168,48 @@
             margin-bottom: 16px;
         }
 
+        /* ── Загрузка контекстных файлов ── */
+        .file-list {
+            list-style: none;
+            margin: 8px 0 0;
+            padding: 0;
+        }
+        .file-list li {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 10px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+        }
+        .file-list li .remove-file {
+            margin-left: auto;
+            cursor: pointer;
+            color: #dc3545;
+            font-weight: bold;
+            background: none;
+            border: none;
+            font-size: 1em;
+            line-height: 1;
+        }
+        .file-drop-zone {
+            border: 2px dashed #a78bca;
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+            color: #764ba2;
+            font-size: 0.95em;
+            cursor: pointer;
+            transition: background 0.2s;
+            background: #faf7ff;
+        }
+        .file-drop-zone:hover, .file-drop-zone.dragover {
+            background: #ede8f8;
+        }
+
         /* ── LLM анализ ── */
         .llm-analysis-block {
             background: #f8f9fa;
@@ -261,10 +303,24 @@
         <!-- LLM-эксперт -->
         <div class="llm-section" style="margin-top: 20px;">
             <h3>🤖 LLM-Эксперт для Hybrid (опционально)</h3>
-            <p class="help-text">Веб-ссылки с внешним контекстом. Используются только гибридной моделью для коррекции прогноза.</p>
-            <label for="webUrls">Веб-ссылки (по одной на строку):</label>
-            <textarea id="webUrls" placeholder="https://example.com/news1&#10;https://example.com/news2"></textarea>
-            <p class="info-text">ℹ️ Если ссылки не указаны, эксперт использует только исторические данные. Требуется YandexGPT API в .env файле.</p>
+            <p class="help-text">Контекст для LLM-эксперта: веб-ссылки и/или локальные файлы PDF/DOCX. Используются только гибридной моделью.</p>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+                <div>
+                    <label for="webUrls">🌐 Веб-ссылки (по одной на строку):</label>
+                    <textarea id="webUrls" placeholder="https://example.com/news1&#10;https://example.com/news2"></textarea>
+                </div>
+                <div>
+                    <label>📂 Локальные файлы (PDF, DOCX):</label>
+                    <div class="file-drop-zone" id="contextDropZone">
+                        📄 Перетащите файлы сюда или нажмите для выбора
+                        <input type="file" id="contextFiles" multiple accept=".pdf,.docx"
+                               style="display:none">
+                    </div>
+                    <ul class="file-list" id="contextFileList"></ul>
+                </div>
+            </div>
+            <p class="info-text">ℹ️ Если ни ссылок, ни файлов нет — эксперт анализирует только исторические данные. Требуется YandexGPT API в .env.</p>
         </div>
 
         <button id="runBtn" class="btn btn-success" style="margin-top: 10px;">🔬 Запустить тестирование всех моделей</button>
@@ -316,6 +372,58 @@
 
 <script>
 const API_URL = 'http://localhost:3000';
+
+// ── Управление контекстными файлами ──────────────────────────────
+const contextFilesMap = new Map(); // filename → File
+
+function renderFileList() {
+    const ul = document.getElementById('contextFileList');
+    ul.innerHTML = '';
+    contextFilesMap.forEach((file, name) => {
+        const li = document.createElement('li');
+        const icon = name.endsWith('.pdf') ? '📄' : '📝';
+        li.innerHTML = `${icon} <span>${name}</span><span style="color:#888;font-size:0.85em">${(file.size/1024).toFixed(1)} KB</span>
+            <button class="remove-file" data-name="${name}" title="Удалить">✕</button>`;
+        ul.appendChild(li);
+    });
+    ul.querySelectorAll('.remove-file').forEach(btn => {
+        btn.addEventListener('click', () => {
+            contextFilesMap.delete(btn.dataset.name);
+            renderFileList();
+        });
+    });
+}
+
+function addContextFiles(files) {
+    for (const f of files) {
+        const name = f.name.toLowerCase();
+        if (name.endsWith('.pdf') || name.endsWith('.docx')) {
+            contextFilesMap.set(f.name, f);
+        } else {
+            alert(`Файл "${f.name}" не поддерживается. Принимаются только PDF и DOCX.`);
+        }
+    }
+    renderFileList();
+}
+
+// Клик на зону → открыть диалог
+document.getElementById('contextDropZone').addEventListener('click', () => {
+    document.getElementById('contextFiles').click();
+});
+document.getElementById('contextFiles').addEventListener('change', (e) => {
+    addContextFiles(Array.from(e.target.files));
+    e.target.value = '';
+});
+
+// Drag & Drop
+const dropZone = document.getElementById('contextDropZone');
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    addContextFiles(Array.from(e.dataTransfer.files));
+});
 
 // Цвета и стили для каждой модели
 const MODEL_STYLES = {
@@ -369,6 +477,10 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     formData.append('test_file',  testFile);
     formData.append('slm_model',  slmModel);
     formData.append('web_urls',   webUrls);
+    // Контекстные файлы (PDF/DOCX)
+    contextFilesMap.forEach((file) => {
+        formData.append('context_files', file, file.name);
+    });
 
     // UI — старт
     document.getElementById('runBtn').disabled = true;
