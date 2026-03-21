@@ -13,6 +13,7 @@ import json
 from io import BytesIO, StringIO
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
+from typing import List
 
 try:
     import torch
@@ -83,6 +84,7 @@ async def test_forecast(
     test_file: UploadFile = File(...),
     slm_model: str = Form("smollm2-360m"),
     web_urls: str = Form(""),
+    context_files: List[UploadFile] = File(default=[]),
 ):
     """
     Тестовый прогноз: обучение на train_file, сравнение с test_file.
@@ -137,6 +139,23 @@ async def test_forecast(
     # ── 3а. Парсинг веб-ссылок для LLM-эксперта ────────────────────
     web_urls_list = [u.strip() for u in web_urls.splitlines() if u.strip()]
 
+    # ── 3б. Извлечение текста из контекстных файлов (PDF/DOCX) ────────
+    extra_context_parts = []
+    for cf in context_files:
+        if not cf or not cf.filename:
+            continue
+        fname = cf.filename.lower()
+        if not (fname.endswith(".pdf") or fname.endswith(".docx")):
+            print(f"[TEST] Пропущен неподдерживаемый файл: {cf.filename}")
+            continue
+        raw = await cf.read()
+        text = LLMExpert.extract_text_from_file(raw, cf.filename)
+        if text.strip():
+            extra_context_parts.append(f"--- {cf.filename} ---\n{text}")
+            print(f"[TEST] Прочитан файл '{cf.filename}': {len(text)} символов")
+
+    extra_context = "\n\n".join(extra_context_parts)
+
     results = {}
 
     for model_key, model_name in MODEL_CONFIGS:
@@ -172,7 +191,6 @@ async def test_forecast(
             if model_key == "hybrid" and _LLM_AVAILABLE:
                 try:
                     llm_expert = LLMExpert()
-                    # Предварительный прогноз для анализа
                     pre = model.predict(steps, return_conf_int=True, alpha=0.05)
                     pre_fc  = pre["forecast"]
                     pre_lo  = pre.get("lower_bound",  pre_fc * 0.95)
@@ -184,6 +202,7 @@ async def test_forecast(
                         lower_bound=pre_lo,
                         upper_bound=pre_hi,
                         web_urls=web_urls_list,
+                        extra_context=extra_context,
                     )
                     correction_applied = corr["correction_applied"]
                     llm_analysis = corr["analysis"]

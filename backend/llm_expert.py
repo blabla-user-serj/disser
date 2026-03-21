@@ -17,6 +17,19 @@ import json
 import traceback
 from datetime import datetime
 from html.parser import HTMLParser
+from io import BytesIO
+
+try:
+    import pypdf
+    _PYPDF_AVAILABLE = True
+except ImportError:
+    _PYPDF_AVAILABLE = False
+
+try:
+    import docx as _docx_module
+    _DOCX_AVAILABLE = True
+except ImportError:
+    _DOCX_AVAILABLE = False
 
 try:
     import openai
@@ -106,6 +119,52 @@ class LLMExpert:
             print(f"   - Folder ID: {'✗ НЕ УСТАНОВЛЕН' if not self.folder_id else self.folder_id}")
             if not OPENAI_AVAILABLE:
                 print(f"   - OpenAI: ✗ Не установлен (pip install openai)")
+
+    @staticmethod
+    def extract_text_from_file(content: bytes, filename: str) -> str:
+        """
+        Извлекает текст из загруженного файла (PDF или DOCX).
+
+        Args:
+            content: сырые байты файла
+            filename: имя файла (используется для определения формата)
+
+        Returns:
+            Извлечённый текст или сообщение об ошибке.
+        """
+        fname = filename.lower()
+
+        # ── PDF ──────────────────────────────────────────────────────
+        if fname.endswith(".pdf"):
+            if not _PYPDF_AVAILABLE:
+                return "[PDF] Библиотека pypdf не установлена. pip install pypdf"
+            try:
+                reader = pypdf.PdfReader(BytesIO(content))
+                pages_text = []
+                for page in reader.pages:
+                    text = page.extract_text() or ""
+                    if text.strip():
+                        pages_text.append(text.strip())
+                full = "\n".join(pages_text)
+                print(f"   📄 PDF '{filename}': {len(reader.pages)} стр., {len(full)} символов")
+                return full
+            except Exception as e:
+                return f"[PDF] Ошибка чтения '{filename}': {e}"
+
+        # ── DOCX ─────────────────────────────────────────────────────
+        if fname.endswith(".docx"):
+            if not _DOCX_AVAILABLE:
+                return "[DOCX] Библиотека python-docx не установлена. pip install python-docx"
+            try:
+                doc = _docx_module.Document(BytesIO(content))
+                paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+                full = "\n".join(paragraphs)
+                print(f"   📄 DOCX '{filename}': {len(paragraphs)} абзацев, {len(full)} символов")
+                return full
+            except Exception as e:
+                return f"[DOCX] Ошибка чтения '{filename}': {e}"
+
+        return f"[ФАЙЛ] Неподдерживаемый формат: '{filename}'. Поддерживаются PDF и DOCX."
 
     def _extract_text_from_html(self, html: str) -> str:
         """
@@ -747,7 +806,8 @@ class LLMExpert:
         forecast: np.ndarray,
         lower_bound: np.ndarray,
         upper_bound: np.ndarray,
-        web_urls: Optional[List[str]] = None
+        web_urls: Optional[List[str]] = None,
+        extra_context: str = "",
     ) -> Dict:
         """
         Коррекция прогноза с помощью YandexGPT
@@ -797,7 +857,18 @@ class LLMExpert:
         if web_urls:
             print(f"📥 Загрузка веб-контекста из {len(web_urls)} источников...")
             web_context, key_facts = self._fetch_web_context(web_urls)
-        
+
+        # Дополнительный контекст из файлов (PDF/DOCX) — добавляем к web_context
+        if extra_context and extra_context.strip():
+            file_snippet = extra_context.strip()[:6000]
+            if len(extra_context.strip()) > 6000:
+                file_snippet += "..."
+            web_context = (web_context + "\n\n--- КОНТЕКСТ ИЗ ФАЙЛОВ ---\n" + file_snippet).strip()
+            # Извлекаем факты из файлового контекста тем же методом
+            file_facts = self._extract_key_facts_llm(extra_context, "local_file")
+            key_facts = list(dict.fromkeys(key_facts + file_facts))[:15]
+            print(f"   📎 Добавлен контекст из файлов: {len(extra_context)} символов, {len(file_facts)} фактов")
+
         # Определяем направление тренда
         trend_direction = "растёт" if trend > 0 else "падает"
         
