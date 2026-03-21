@@ -44,6 +44,12 @@ from backend.main import (
     smart_parse_numeric,
 )
 
+try:
+    from backend.llm_expert import LLMExpert
+    _LLM_AVAILABLE = True
+except Exception:
+    _LLM_AVAILABLE = False
+
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     """MAE, MAPE, RMSE на тестовой выборке."""
@@ -76,6 +82,7 @@ async def test_forecast(
     train_file: UploadFile = File(...),
     test_file: UploadFile = File(...),
     slm_model: str = Form("smollm2-360m"),
+    web_urls: str = Form(""),
 ):
     """
     Тестовый прогноз: обучение на train_file, сравнение с test_file.
@@ -127,6 +134,9 @@ async def test_forecast(
         ("hybrid",   "Hybrid"),
     ]
 
+    # ── 3а. Парсинг веб-ссылок для LLM-эксперта ────────────────────
+    web_urls_list = [u.strip() for u in web_urls.splitlines() if u.strip()]
+
     results = {}
 
     for model_key, model_name in MODEL_CONFIGS:
@@ -154,8 +164,43 @@ async def test_forecast(
             else:
                 model.fit(train_values)
 
+            # ── LLM-коррекция (только для hybrid) ────────────────────
+            llm_correction = None
+            llm_analysis = ""
+            correction_applied = False
+
+            if model_key == "hybrid" and _LLM_AVAILABLE:
+                try:
+                    llm_expert = LLMExpert()
+                    # Предварительный прогноз для анализа
+                    pre = model.predict(steps, return_conf_int=True, alpha=0.05)
+                    pre_fc  = pre["forecast"]
+                    pre_lo  = pre.get("lower_bound",  pre_fc * 0.95)
+                    pre_hi  = pre.get("upper_bound",  pre_fc * 1.05)
+
+                    corr = llm_expert.correct_forecast(
+                        historical_data=train_values,
+                        forecast=pre_fc,
+                        lower_bound=pre_lo,
+                        upper_bound=pre_hi,
+                        web_urls=web_urls_list,
+                    )
+                    correction_applied = corr["correction_applied"]
+                    llm_analysis = corr["analysis"]
+                    if correction_applied:
+                        llm_correction = corr["corrected_forecast"] - pre_fc
+                        print(f"[TEST] Hybrid LLM коррекция применена, Δ_LLM[0]={llm_correction[0]:.4f}")
+                except Exception as llm_err:
+                    print(f"[TEST] Hybrid LLM коррекция недоступна: {llm_err}")
+                    llm_analysis = f"⚠️ LLM коррекция недоступна: {llm_err}"
+
             # Прогноз
-            pred_result = model.predict(steps, return_conf_int=True, alpha=0.05)
+            if model_key == "hybrid" and llm_correction is not None:
+                pred_result = model.predict(steps, return_conf_int=True, alpha=0.05,
+                                            llm_correction=llm_correction)
+            else:
+                pred_result = model.predict(steps, return_conf_int=True, alpha=0.05)
+
             forecast = sanitize_array(pred_result["forecast"])
             lower = sanitize_array(pred_result.get("lower_bound", forecast * 0.95))
             upper = sanitize_array(pred_result.get("upper_bound", forecast * 1.05))
@@ -175,6 +220,8 @@ async def test_forecast(
                 "lower_bound": sanitize_for_json(lower.tolist()),
                 "upper_bound": sanitize_for_json(upper.tolist()),
                 "metrics": metrics,
+                "llm_analysis": llm_analysis,
+                "llm_correction_applied": correction_applied,
             }
 
             print(f"[TEST] {model_name}: MAE={metrics['MAE']:.4f}, "
