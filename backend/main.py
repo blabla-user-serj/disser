@@ -90,6 +90,10 @@ torch.set_grad_enabled(False)
 
 app = FastAPI(title="Hybrid Forecast API", version="2.0")
 
+# Тестовый роутер (отдельный файл, не изменяет основную логику)
+from backend.test_routes import router as test_router
+app.include_router(test_router)
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
