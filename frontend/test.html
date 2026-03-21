@@ -168,6 +168,32 @@
             margin-bottom: 16px;
         }
 
+        /* ── LLM анализ ── */
+        .llm-analysis-block {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 16px 20px;
+            border-radius: 6px;
+            margin: 16px 0;
+        }
+        .llm-analysis-block h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1em;
+        }
+        .llm-analysis-block pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: 'Courier New', monospace;
+            font-size: 0.88em;
+            line-height: 1.6;
+            color: #333;
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 0;
+        }
+
         /* ── Информация об ошибке ── */
         .error-block {
             background: #fff3f3;
@@ -230,6 +256,15 @@
                     </optgroup>
                 </select>
             </div>
+        </div>
+
+        <!-- LLM-эксперт -->
+        <div class="llm-section" style="margin-top: 20px;">
+            <h3>🤖 LLM-Эксперт для Hybrid (опционально)</h3>
+            <p class="help-text">Веб-ссылки с внешним контекстом. Используются только гибридной моделью для коррекции прогноза.</p>
+            <label for="webUrls">Веб-ссылки (по одной на строку):</label>
+            <textarea id="webUrls" placeholder="https://example.com/news1&#10;https://example.com/news2"></textarea>
+            <p class="info-text">ℹ️ Если ссылки не указаны, эксперт использует только исторические данные. Требуется YandexGPT API в .env файле.</p>
         </div>
 
         <button id="runBtn" class="btn btn-success" style="margin-top: 10px;">🔬 Запустить тестирование всех моделей</button>
@@ -327,11 +362,13 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     }
 
     const slmModel = document.getElementById('slmSelect').value;
+    const webUrls   = document.getElementById('webUrls').value;
 
     const formData = new FormData();
     formData.append('train_file', trainFile);
     formData.append('test_file',  testFile);
     formData.append('slm_model',  slmModel);
+    formData.append('web_urls',   webUrls);
 
     // UI — старт
     document.getElementById('runBtn').disabled = true;
@@ -563,6 +600,18 @@ function buildIndividualCharts(data) {
         } else {
             // Метрики
             const mt = m.metrics;
+            let llmHtml = '';
+            if (key === 'hybrid' && m.llm_analysis) {
+                const badge = m.llm_correction_applied
+                    ? '<span style="background:#28a745;color:white;padding:3px 10px;border-radius:12px;font-size:0.85em;margin-bottom:10px;display:inline-block">✅ Коррекция применена</span>'
+                    : '<span style="background:#ffc107;color:#333;padding:3px 10px;border-radius:12px;font-size:0.85em;margin-bottom:10px;display:inline-block">⚠️ Базовый анализ</span>';
+                llmHtml = `
+                    <div class="llm-analysis-block">
+                        <h4>🤖 Анализ LLM-Эксперта</h4>
+                        ${badge}
+                        <pre>${m.llm_analysis}</pre>
+                    </div>`;
+            }
             panel.innerHTML = `
                 <div class="metrics-test">
                     <div class="metric-test-card">
@@ -578,6 +627,7 @@ function buildIndividualCharts(data) {
                         <p>${fmt(mt.RMSE)}</p>
                     </div>
                 </div>
+                ${llmHtml}
                 <div class="individual-chart-container">
                     <canvas id="chart-${key}"></canvas>
                 </div>`;
