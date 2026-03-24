@@ -418,9 +418,17 @@ class XGBoostTS:
             result = {'forecast': forecast}
 
             if return_conf_int:
-                std_data = np.std(self.data)
-                result['lower_bound'] = forecast - 1.96 * std_data
-                result['upper_bound'] = forecast + 1.96 * std_data
+                from scipy import stats
+                # simple_mode: используем std остатков от линейного тренда
+                x = np.arange(len(self.data))
+                trend_line = self.trend * x + (self.last_value - self.trend * (len(self.data) - 1))
+                simple_residuals = np.array(self.data, dtype=float) - trend_line
+                std_resid = np.std(simple_residuals) if len(simple_residuals) > 1 else abs(self.trend)
+                z_score = stats.norm.ppf(1 - alpha / 2)
+                # Интервал расширяется с горизонтом
+                margins = np.array([z_score * std_resid * np.sqrt(i + 1) for i in range(steps)])
+                result['lower_bound'] = forecast - margins
+                result['upper_bound'] = forecast + margins
 
             return result
 
@@ -474,12 +482,12 @@ class XGBoostTS:
                 from scipy import stats
 
                 std_residual = np.std(self.residuals)
-                z_score = stats.norm.ppf(1 - alpha/2)
+                z_score = stats.norm.ppf(1 - alpha / 2)
 
-                # Интервал в масштабированном пространстве
-                margin_scaled = z_score * std_residual
+                # Интервал расширяется с горизонтом: margin(h) = z * std * sqrt(h)
+                h = step_idx + 1
+                margin_scaled = z_score * std_residual * np.sqrt(h)
 
-                # Обратное преобразование
                 lower_scaled = pred_scaled - margin_scaled
                 upper_scaled = pred_scaled + margin_scaled
 
