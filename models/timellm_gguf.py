@@ -1084,12 +1084,20 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
         # Доверительные интервалы
         if return_conf_int:
             from scipy import stats
-            std_residual = np.std(self.residuals) if self.residuals is not None else np.std(self.data)
-            z_score = stats.norm.ppf(1 - alpha/2)
-            
-            margin = z_score * std_residual
-            lower = forecast - margin
-            upper = forecast + margin
+            # Выбираем std остатков; если остатки вырожденные (напр. [0]) — берём std данных
+            if self.residuals is not None and len(self.residuals) > 1 and np.std(self.residuals) > 0:
+                std_residual = np.std(self.residuals)
+            else:
+                # Fallback: std остатков от среднего (не std всего ряда с трендом)
+                std_residual = np.std(np.array(self.data) - np.mean(self.data))
+
+            z_score = stats.norm.ppf(1 - alpha / 2)
+
+            # Интервал расширяется с горизонтом: margin(h) = z * std * sqrt(h)
+            h = np.arange(1, len(forecast) + 1)
+            margins = z_score * std_residual * np.sqrt(h)
+            lower = forecast - margins
+            upper = forecast + margins
             
             # Очистка доверительных интервалов от NaN/Inf
             result['lower_bound'] = sanitize_array(lower, fallback_value=forecast[0] * 0.9)
