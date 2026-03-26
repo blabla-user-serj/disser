@@ -283,27 +283,41 @@ class HybridModel:
         n = len(self.data)
         alpha = self._alpha_correction(n)
         
-        # Вычисляем масштаб данных для нормализации ошибок
-        data_std = np.std(self.data)
-        data_mean_abs = np.abs(np.mean(self.data))
-        scale = max(data_std, data_mean_abs * 0.1, 1.0)  # Защита от деления на ноль
-        
-        print(f"📐 Коэффициенты: α(n={n}) = {alpha:.4f}")
-        print(f"📏 Масштаб для нормализации ошибок: {scale:.4f}")
-        
-        # Нормализуем ошибки
+        # Нормализуем абсолютные MAE → относительные ошибки (ER_rel = MAE_i / min MAE).
+        # Это обеспечивает масштабно-инвариантное сравнение:
+        #   - лучшая модель всегда получает ER_rel = 1.0 (база)
+        #   - модель с MAE в N раз хуже получает ER_rel = N
+        # Cap RelMAE гарантирует, что даже сильно проигрывающая модель
+        # сохраняет минимальный вес (не "выключается" полностью):
+        #   exp(-β × cap × α) ≥ exp(-3.0) ≈ 0.05 по отношению к базовой
+        # Модель с inf-ошибкой получает максимальный штраф = cap.
+        raw_errors = {}
+        for model in ['sarima', 'xgboost', 'timellm']:
+            raw_errors[model] = errors.get(model, 0)
+
+        finite_errors = [v for v in raw_errors.values() if v != float('inf') and v > 0]
+        if not finite_errors:
+            finite_errors = [1.0]
+        min_err = min(finite_errors)
+
+        # cap = 3.0 / (β × α): при любом n худший exp ≥ exp(-3.0) от лучшего
+        rel_cap = 3.0 / (self.BETA * alpha)
+
         normalized_errors = {}
         for model in ['sarima', 'xgboost', 'timellm']:
-            raw_error = errors.get(model, 0)
-            if raw_error == float('inf'):
-                normalized_errors[model] = 10.0  # Штраф за неработающую модель
+            if raw_errors[model] == float('inf') or raw_errors[model] <= 0:
+                normalized_errors[model] = rel_cap
             else:
-                normalized_errors[model] = raw_error / scale
-            print(f"   {model}: MAE={raw_error:.4f} → NormMAE={normalized_errors[model]:.4f}")
+                normalized_errors[model] = min(raw_errors[model] / min_err, rel_cap)
+        
+        print(f"📐 Коэффициенты: α(n={n}) = {alpha:.4f}")
+        print(f"📏 min MAE = {min_err:.4f}  (база для относительной нормализации, cap={rel_cap:.3f})")
+        for model in ['sarima', 'xgboost', 'timellm']:
+            print(f"   {model}: MAE={raw_errors[model]:.4f} → RelMAE={normalized_errors[model]:.4f}")
         
         # Формула 2.7: Обновление истории ошибок с экспоненциальным сглаживанием.
         # Холодный старт: если история нулевая, инициализируем напрямую (без λ-демпфирования),
-        # чтобы разброс ошибок полностью отразился в весах.
+        # чтобы разброс ошибок полностью отразился в весах с первого обновления.
         cold_start = all(v == 0.0 for v in self.error_history.values())
         for model in ['sarima', 'xgboost', 'timellm']:
             if cold_start:
