@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hybrid Forecast — Тестовый режим</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        /* ── Переключатель режимов ── */
+        .mode-switcher {
+            display: flex;
+            justify-content: center;
+            gap: 0;
+            margin: 0 0 0 0;
+            background: rgba(255,255,255,0.15);
+            padding: 8px;
+        }
+        .mode-btn {
+            padding: 10px 32px;
+            border: 2px solid rgba(255,255,255,0.7);
+            background: transparent;
+            color: white;
+            font-size: 1em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-radius: 0;
+        }
+        .mode-btn:first-child { border-radius: 8px 0 0 8px; }
+        .mode-btn:last-child  { border-radius: 0 8px 8px 0; border-left: none; }
+        .mode-btn.active {
+            background: white;
+            color: #764ba2;
+        }
+        .mode-btn:not(.active):hover { background: rgba(255,255,255,0.25); }
+
+        /* ── Двойная загрузка ── */
+        .upload-pair {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 700px) { .upload-pair { grid-template-columns: 1fr; } }
+
+        .upload-box {
+            border: 2px dashed #667eea;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            background: #f8f9fa;
+            transition: border-color 0.2s;
+        }
+        .upload-box:hover { border-color: #764ba2; }
+        .upload-box h4 { color: #667eea; margin-bottom: 12px; font-size: 1.1em; }
+        .upload-box input[type=file] { width: 100%; margin-bottom: 10px; }
+        .upload-box .file-status {
+            font-size: 0.9em;
+            min-height: 22px;
+            color: #555;
+        }
+        .upload-box .file-status.ok  { color: #28a745; font-weight: bold; }
+        .upload-box .file-status.err { color: #dc3545; }
+
+        /* ── Прогресс ── */
+        .progress-bar-wrap {
+            background: #e9ecef;
+            border-radius: 8px;
+            height: 10px;
+            overflow: hidden;
+            margin: 6px 0;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            width: 0%;
+            transition: width 0.4s ease;
+        }
+        .progress-label { font-size: 0.9em; color: #555; }
+
+        /* ── Табы моделей ── */
+        .model-tabs {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+        .model-tab {
+            padding: 8px 20px;
+            border: 2px solid #ddd;
+            border-radius: 20px;
+            background: white;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.2s;
+            font-size: 0.95em;
+        }
+        .model-tab.active {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border-color: transparent;
+        }
+        .model-tab.error { border-color: #dc3545; color: #dc3545; }
+        .model-tab.error.active { background: #dc3545; color: white; }
+
+        /* ── Метрики на тесте ── */
+        .metrics-test {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin: 20px 0;
+        }
+        .metric-test-card {
+            background: linear-gradient(135deg, #11998e, #38ef7d);
+            color: white;
+            border-radius: 10px;
+            padding: 18px;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        .metric-test-card.error-card {
+            background: linear-gradient(135deg, #f5576c, #f093fb);
+        }
+        .metric-test-card h4 { font-size: 0.95em; opacity: 0.9; margin-bottom: 8px; }
+        .metric-test-card p  { font-size: 1.8em; font-weight: bold; }
+
+        /* ── Сводная таблица метрик ── */
+        .summary-table-wrap { overflow-x: auto; margin: 20px 0; }
+        .summary-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.95em;
+        }
+        .summary-table th {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 12px 16px;
+            text-align: left;
+        }
+        .summary-table td {
+            padding: 10px 16px;
+            border-bottom: 1px solid #eee;
+        }
+        .summary-table tr:last-child td { border-bottom: none; }
+        .summary-table tr:hover td { background: #f8f9fa; }
+        .best-cell { color: #28a745; font-weight: bold; }
+        .error-cell { color: #dc3545; font-style: italic; }
+
+        /* ── Сводный график ── */
+        .summary-chart-container {
+            position: relative;
+            height: 480px;
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        /* ── Индивидуальный график ── */
+        .individual-chart-container {
+            position: relative;
+            height: 420px;
+            background: #f8f9fa;
+            padding: 16px;
+            border-radius: 10px;
+            margin-bottom: 16px;
+        }
+
+        /* ── Загрузка контекстных файлов ── */
+        .file-list {
+            list-style: none;
+            margin: 8px 0 0;
+            padding: 0;
+        }
+        .file-list li {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 10px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+        }
+        .file-list li .remove-file {
+            margin-left: auto;
+            cursor: pointer;
+            color: #dc3545;
+            font-weight: bold;
+            background: none;
+            border: none;
+            font-size: 1em;
+            line-height: 1;
+        }
+        .file-drop-zone {
+            border: 2px dashed #a78bca;
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+            color: #764ba2;
+            font-size: 0.95em;
+            cursor: pointer;
+            transition: background 0.2s;
+            background: #faf7ff;
+        }
+        .file-drop-zone:hover, .file-drop-zone.dragover {
+            background: #ede8f8;
+        }
+
+        /* ── LLM анализ ── */
+        .llm-analysis-block {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 16px 20px;
+            border-radius: 6px;
+            margin: 16px 0;
+        }
+        .llm-analysis-block h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1em;
+        }
+        .llm-analysis-block pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: 'Courier New', monospace;
+            font-size: 0.88em;
+            line-height: 1.6;
+            color: #333;
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 0;
+        }
+
+        /* ── Информация об ошибке ── */
+        .error-block {
+            background: #fff3f3;
+            border-left: 4px solid #dc3545;
+            padding: 16px;
+            border-radius: 6px;
+            margin: 16px 0;
+            font-family: monospace;
+            font-size: 0.9em;
+            color: #dc3545;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>🔬 Hybrid Forecast — Тестовый режим</h1>
+        <p>Оценка точности всех моделей на реальных тестовых данных</p>
+        <div class="mode-switcher">
+            <button class="mode-btn" onclick="location.href='index.html'">🔮 Стандартный режим</button>
+            <button class="mode-btn active">🔬 Тестовый режим</button>
+        </div>
+    </header>
+
+    <!-- ── Загрузка файлов ── -->
+    <section class="upload-section">
+        <h2>📁 Загрузка Данных</h2>
+        <div class="upload-pair">
+            <div class="upload-box">
+                <h4>📈 Обучающая выборка</h4>
+                <input type="file" id="trainFile" accept=".csv,.xlsx" />
+                <div class="file-status" id="trainStatus">Файл не выбран</div>
+            </div>
+            <div class="upload-box">
+                <h4>🎯 Тестовая выборка</h4>
+                <input type="file" id="testFile" accept=".csv,.xlsx" />
+                <div class="file-status" id="testStatus">Файл не выбран</div>
+            </div>
+        </div>
+
+        <div class="config-grid" style="margin-top: 20px;">
+            <div class="config-item">
+                <label for="slmSelect">SLM модель (для TimeLLM / Hybrid):</label>
+                <select id="slmSelect">
+                    <optgroup label="⭐ SmolLM2 2025 (рекомендуется)">
+                        <option value="smollm2-360m" selected>⭐ SmolLM2-360M — рекомендуется</option>
+                        <option value="smollm2-135m">⭐ SmolLM2-135M — быстрейшая</option>
+                        <option value="smollm2-1.7b">⭐ SmolLM2-1.7B — лучшее качество</option>
+                    </optgroup>
+                    <optgroup label="🟢 Классика">
+                        <option value="gpt2">🟢 GPT-2 (124M)</option>
+                        <option value="distilgpt2">🟢 DistilGPT-2 (82M)</option>
+                    </optgroup>
+                    <optgroup label="🟡 Другие">
+                        <option value="phi3-mini">🟡 Phi-3-mini (3.8B)</option>
+                        <option value="tinyllama">🟡 TinyLlama (1.1B)</option>
+                        <option value="qwen2-0.5b">🟡 Qwen2-0.5B</option>
+                        <option value="llama3.2-1b">🟡 Llama-3.2-1B</option>
+                    </optgroup>
+                </select>
+            </div>
+        </div>
+
+        <!-- LLM-эксперт -->
+        <div class="llm-section" style="margin-top: 20px;">
+            <h3>🤖 LLM-Эксперт для Hybrid (опционально)</h3>
+            <p class="help-text">Контекст для LLM-эксперта: веб-ссылки и/или локальные файлы PDF/DOCX. Используются только гибридной моделью.</p>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+                <div>
+                    <label for="webUrls">🌐 Веб-ссылки (по одной на строку):</label>
+                    <textarea id="webUrls" placeholder="https://example.com/news1&#10;https://example.com/news2"></textarea>
+                </div>
+                <div>
+                    <label>📂 Локальные файлы (PDF, DOCX):</label>
+                    <div class="file-drop-zone" id="contextDropZone">
+                        📄 Перетащите файлы сюда или нажмите для выбора
+                        <input type="file" id="contextFiles" multiple accept=".pdf,.docx"
+                               style="display:none">
+                    </div>
+                    <ul class="file-list" id="contextFileList"></ul>
+                </div>
+            </div>
+            <p class="info-text">ℹ️ Если ни ссылок, ни файлов нет — эксперт анализирует только исторические данные. Требуется YandexGPT API в .env.</p>
+        </div>
+
+        <button id="runBtn" class="btn btn-success" style="margin-top: 10px;">🔬 Запустить тестирование всех моделей</button>
+
+        <!-- Прогресс -->
+        <div id="progressSection" style="display:none; margin-top: 20px;">
+            <div class="progress-label" id="progressLabel">Подготовка...</div>
+            <div class="progress-bar-wrap"><div class="progress-bar" id="progressBar"></div></div>
+        </div>
+    </section>
+
+    <!-- ── Результаты ── -->
+    <section id="resultsSection" style="display:none;">
+        <h2>📊 Результаты Тестирования</h2>
+
+        <!-- Сводная таблица метрик -->
+        <h3>📋 Сводная таблица метрик</h3>
+        <div class="summary-table-wrap">
+            <table class="summary-table" id="summaryTable">
+                <thead>
+                    <tr>
+                        <th>Модель</th>
+                        <th>MAE</th>
+                        <th>MAPE, %</th>
+                        <th>RMSE</th>
+                        <th>Статус</th>
+                    </tr>
+                </thead>
+                <tbody id="summaryTableBody"></tbody>
+            </table>
+        </div>
+
+        <!-- Сводный график -->
+        <h3>🗺️ Сводный график прогнозов</h3>
+        <div class="summary-chart-container">
+            <canvas id="summaryChart"></canvas>
+        </div>
+
+        <!-- Индивидуальные графики -->
+        <h3>📈 Детальные графики по моделям</h3>
+        <div class="model-tabs" id="modelTabs"></div>
+        <div id="modelPanels"></div>
+    </section>
+
+    <footer>
+        <p>Hybrid Forecast API v2.0 — Тестовый режим | SARIMA-XS + XGBoost + TimeLLM + Hybrid</p>
+    </footer>
+</div>
+
+<script>
+const API_URL = 'http://localhost:3000';
+
+// ── Управление контекстными файлами ──────────────────────────────
+const contextFilesMap = new Map(); // filename → File
+
+function renderFileList() {
+    const ul = document.getElementById('contextFileList');
+    ul.innerHTML = '';
+    contextFilesMap.forEach((file, name) => {
+        const li = document.createElement('li');
+        const icon = name.endsWith('.pdf') ? '📄' : '📝';
+        li.innerHTML = `${icon} <span>${name}</span><span style="color:#888;font-size:0.85em">${(file.size/1024).toFixed(1)} KB</span>
+            <button class="remove-file" data-name="${name}" title="Удалить">✕</button>`;
+        ul.appendChild(li);
+    });
+    ul.querySelectorAll('.remove-file').forEach(btn => {
+        btn.addEventListener('click', () => {
+            contextFilesMap.delete(btn.dataset.name);
+            renderFileList();
+        });
+    });
+}
+
+function addContextFiles(files) {
+    for (const f of files) {
+        const name = f.name.toLowerCase();
+        if (name.endsWith('.pdf') || name.endsWith('.docx')) {
+            contextFilesMap.set(f.name, f);
+        } else {
+            alert(`Файл "${f.name}" не поддерживается. Принимаются только PDF и DOCX.`);
+        }
+    }
+    renderFileList();
+}
+
+// Клик на зону → открыть диалог
+document.getElementById('contextDropZone').addEventListener('click', () => {
+    document.getElementById('contextFiles').click();
+});
+document.getElementById('contextFiles').addEventListener('change', (e) => {
+    addContextFiles(Array.from(e.target.files));
+    e.target.value = '';
+});
+
+// Drag & Drop
+const dropZone = document.getElementById('contextDropZone');
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    addContextFiles(Array.from(e.dataTransfer.files));
+});
+
+// Цвета и стили для каждой модели
+const MODEL_STYLES = {
+    sarima:  { color: 'rgb(54, 162, 235)',  fill: 'rgba(54,162,235,0.12)',  label: 'SARIMA-XS' },
+    xgboost: { color: 'rgb(255, 159, 64)',  fill: 'rgba(255,159,64,0.12)',  label: 'XGBoost'   },
+    timellm: { color: 'rgb(153, 102, 255)', fill: 'rgba(153,102,255,0.12)', label: 'TimeLLM'   },
+    hybrid:  { color: 'rgb(255, 99, 132)',  fill: 'rgba(255,99,132,0.12)',  label: 'Hybrid'    },
+};
+
+let summaryChart = null;
+const individualCharts = {};
+
+// ── Статус файлов ──────────────────────────────────────────────────
+function initFileInput(inputId, statusId) {
+    document.getElementById(inputId).addEventListener('change', (e) => {
+        const f = e.target.files[0];
+        const el = document.getElementById(statusId);
+        if (f) {
+            el.textContent = `✅ ${f.name} (${(f.size/1024).toFixed(1)} KB)`;
+            el.className = 'file-status ok';
+        } else {
+            el.textContent = 'Файл не выбран';
+            el.className = 'file-status';
+        }
+    });
+}
+initFileInput('trainFile', 'trainStatus');
+initFileInput('testFile',  'testStatus');
+
+// ── Прогресс ──────────────────────────────────────────────────────
+function setProgress(pct, label) {
+    document.getElementById('progressBar').style.width = pct + '%';
+    document.getElementById('progressLabel').textContent = label;
+}
+
+// ── Запуск тестирования ───────────────────────────────────────────
+document.getElementById('runBtn').addEventListener('click', async () => {
+    const trainFile = document.getElementById('trainFile').files[0];
+    const testFile  = document.getElementById('testFile').files[0];
+
+    if (!trainFile || !testFile) {
+        alert('Выберите оба файла: обучающий и тестовый');
+        return;
+    }
+
+    const slmModel = document.getElementById('slmSelect').value;
+    const webUrls   = document.getElementById('webUrls').value;
+
+    const formData = new FormData();
+    formData.append('train_file', trainFile);
+    formData.append('test_file',  testFile);
+    formData.append('slm_model',  slmModel);
+    formData.append('web_urls',   webUrls);
+    // Контекстные файлы (PDF/DOCX)
+    contextFilesMap.forEach((file) => {
+        formData.append('context_files', file, file.name);
+    });
+
+    // UI — старт
+    document.getElementById('runBtn').disabled = true;
+    document.getElementById('runBtn').textContent = '⏳ Тестирование...';
+    document.getElementById('progressSection').style.display = 'block';
+    document.getElementById('resultsSection').style.display = 'none';
+    setProgress(5, 'Отправка данных на сервер...');
+
+    // Анимация прогресса (неизвестное время → крутим счётчик)
+    let fakePct = 5;
+    const fakeTimer = setInterval(() => {
+        if (fakePct < 85) {
+            fakePct += 1;
+            const stages = [
+                [10,  'Загрузка файлов...'],
+                [20,  'Обучение SARIMA-XS...'],
+                [40,  'Обучение XGBoost...'],
+                [60,  'Обучение TimeLLM...'],
+                [80,  'Обучение Hybrid...'],
+                [85,  'Финальная обработка...'],
+            ];
+            const stage = stages.reverse().find(([p]) => fakePct >= p);
+            if (stage) setProgress(fakePct, stage[1]);
+        }
+    }, 2000);
+
+    try {
+        const resp = await fetch(`${API_URL}/test/forecast`, {
+            method: 'POST',
+            body: formData,
+        });
+
+        clearInterval(fakeTimer);
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+            throw new Error(err.detail || 'Ошибка сервера');
+        }
+
+        const data = await resp.json();
+        setProgress(100, 'Готово!');
+        renderResults(data);
+
+    } catch (e) {
+        clearInterval(fakeTimer);
+        setProgress(0, '');
+        alert(`Ошибка: ${e.message}`);
+    } finally {
+        document.getElementById('runBtn').disabled = false;
+        document.getElementById('runBtn').textContent = '🔬 Запустить тестирование всех моделей';
+    }
+});
+
+// ── Рендеринг результатов ─────────────────────────────────────────
+function renderResults(data) {
+    document.getElementById('resultsSection').style.display = 'block';
+
+    buildSummaryTable(data);
+    buildSummaryChart(data);
+    buildIndividualCharts(data);
+}
+
+// ── Сводная таблица ───────────────────────────────────────────────
+function buildSummaryTable(data) {
+    const tbody = document.getElementById('summaryTableBody');
+    tbody.innerHTML = '';
+
+    const models = data.models;
+    const keys = ['sarima', 'xgboost', 'timellm', 'hybrid'];
+
+    // Находим лучшие значения (для подсветки)
+    const bestMAE  = minOf(keys, k => models[k]?.metrics?.MAE);
+    const bestMAPE = minOf(keys, k => models[k]?.metrics?.MAPE);
+    const bestRMSE = minOf(keys, k => models[k]?.metrics?.RMSE);
+
+    keys.forEach(key => {
+        const m = models[key];
+        const style = MODEL_STYLES[key];
+        const tr = document.createElement('tr');
+
+        if (m.status === 'error') {
+            tr.innerHTML = `
+                <td><span style="display:inline-block;width:12px;height:12px;
+                    border-radius:50%;background:${style.color};margin-right:8px;"></span>
+                    <strong>${style.label}</strong></td>
+                <td class="error-cell" colspan="3">Ошибка</td>
+                <td class="error-cell">❌ ${m.error || ''}</td>`;
+        } else {
+            const mt = m.metrics;
+            tr.innerHTML = `
+                <td><span style="display:inline-block;width:12px;height:12px;
+                    border-radius:50%;background:${style.color};margin-right:8px;"></span>
+                    <strong>${style.label}</strong></td>
+                <td class="${mt.MAE  === bestMAE  ? 'best-cell' : ''}">${fmt(mt.MAE)}</td>
+                <td class="${mt.MAPE === bestMAPE ? 'best-cell' : ''}">${fmt(mt.MAPE)}%</td>
+                <td class="${mt.RMSE === bestRMSE ? 'best-cell' : ''}">${fmt(mt.RMSE)}</td>
+                <td>✅ OK</td>`;
+        }
+        tbody.appendChild(tr);
+    });
+}
+
+function minOf(keys, getter) {
+    let best = Infinity;
+    keys.forEach(k => { const v = getter(k); if (v != null && v < best) best = v; });
+    return best === Infinity ? null : best;
+}
+
+function fmt(v) {
+    if (v == null) return '—';
+    return Number(v).toFixed(4);
+}
+
+// ── Сводный график ────────────────────────────────────────────────
+function buildSummaryChart(data) {
+    if (summaryChart) { summaryChart.destroy(); summaryChart = null; }
+
+    const trainDates = data.train.dates;
+    const testDates  = data.test.dates;
+    const allDates   = [...trainDates, ...testDates];
+
+    const trainLen = trainDates.length;
+    const testLen  = testDates.length;
+
+    // Исторические данные (только train + null для теста)
+    const histData = [
+        ...data.train.values,
+        ...new Array(testLen).fill(null),
+    ];
+    // Реальные тестовые значения (null для train + real для теста)
+    const realTestData = [
+        ...new Array(trainLen).fill(null),
+        ...data.test.values,
+    ];
+
+    const datasets = [
+        {
+            label: 'Исторические данные',
+            data: histData,
+            borderColor: 'rgb(75, 192, 192)',
+            backgroundColor: 'rgba(75,192,192,0.15)',
+            borderWidth: 2,
+            pointRadius: 2,
+            tension: 0.1,
+        },
+        {
+            label: 'Реальные (тест)',
+            data: realTestData,
+            borderColor: 'rgb(0, 0, 0)',
+            backgroundColor: 'rgba(0,0,0,0.0)',
+            borderWidth: 2.5,
+            borderDash: [6, 3],
+            pointRadius: 3,
+            tension: 0.1,
+        },
+    ];
+
+    const keys = ['sarima', 'xgboost', 'timellm', 'hybrid'];
+    keys.forEach(key => {
+        const m = data.models[key];
+        if (m.status !== 'ok' || !m.forecast.length) return;
+        const style = MODEL_STYLES[key];
+
+        const fData = [...new Array(trainLen).fill(null), ...m.forecast];
+        datasets.push({
+            label: style.label,
+            data: fData,
+            borderColor: style.color,
+            backgroundColor: style.fill,
+            borderWidth: 2,
+            borderDash: [5, 3],
+            pointRadius: 3,
+            tension: 0.1,
+        });
+    });
+
+    const ctx = document.getElementById('summaryChart').getContext('2d');
+    summaryChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: allDates, datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                title: { display: true, text: 'Сводный прогноз: все модели vs реальные данные', font: { size: 14 } },
+                legend: { display: true, position: 'top' },
+            },
+            scales: {
+                x: { ticks: { maxRotation: 45, minRotation: 45, maxTicksLimit: 20 } },
+                y: { title: { display: true, text: 'Значение' } },
+            },
+        },
+    });
+}
+
+// ── Индивидуальные графики ────────────────────────────────────────
+function buildIndividualCharts(data) {
+    // Очистка старых графиков
+    Object.values(individualCharts).forEach(c => c.destroy());
+    Object.keys(individualCharts).forEach(k => delete individualCharts[k]);
+
+    const tabsEl   = document.getElementById('modelTabs');
+    const panelsEl = document.getElementById('modelPanels');
+    tabsEl.innerHTML   = '';
+    panelsEl.innerHTML = '';
+
+    const keys = ['sarima', 'xgboost', 'timellm', 'hybrid'];
+
+    keys.forEach((key, idx) => {
+        const m = data.models[key];
+        const style = MODEL_STYLES[key];
+
+        // Таб
+        const tab = document.createElement('button');
+        tab.className = 'model-tab' + (idx === 0 ? ' active' : '') + (m.status === 'error' ? ' error' : '');
+        tab.textContent = style.label;
+        tab.dataset.key = key;
+        tab.addEventListener('click', () => switchTab(key));
+        tabsEl.appendChild(tab);
+
+        // Панель
+        const panel = document.createElement('div');
+        panel.id = `panel-${key}`;
+        panel.style.display = idx === 0 ? 'block' : 'none';
+
+        if (m.status === 'error') {
+            panel.innerHTML = `
+                <div class="error-block">❌ Модель ${style.label} завершилась с ошибкой:\n${m.error}</div>`;
+        } else {
+            // Метрики
+            const mt = m.metrics;
+            let llmHtml = '';
+            if (key === 'hybrid' && m.llm_analysis) {
+                const badge = m.llm_correction_applied
+                    ? '<span style="background:#28a745;color:white;padding:3px 10px;border-radius:12px;font-size:0.85em;margin-bottom:10px;display:inline-block">✅ Коррекция применена</span>'
+                    : '<span style="background:#ffc107;color:#333;padding:3px 10px;border-radius:12px;font-size:0.85em;margin-bottom:10px;display:inline-block">⚠️ Базовый анализ</span>';
+                llmHtml = `
+                    <div class="llm-analysis-block">
+                        <h4>🤖 Анализ LLM-Эксперта</h4>
+                        ${badge}
+                        <pre>${m.llm_analysis}</pre>
+                    </div>`;
+            }
+            panel.innerHTML = `
+                <div class="metrics-test">
+                    <div class="metric-test-card">
+                        <h4>MAE</h4>
+                        <p>${fmt(mt.MAE)}</p>
+                    </div>
+                    <div class="metric-test-card">
+                        <h4>MAPE</h4>
+                        <p>${fmt(mt.MAPE)}%</p>
+                    </div>
+                    <div class="metric-test-card">
+                        <h4>RMSE</h4>
+                        <p>${fmt(mt.RMSE)}</p>
+                    </div>
+                </div>
+                ${llmHtml}
+                <div class="individual-chart-container">
+                    <canvas id="chart-${key}"></canvas>
+                </div>`;
+        }
+
+        panelsEl.appendChild(panel);
+    });
+
+    // Рисуем графики для успешных моделей (только для активной вкладки сразу, остальные — по клику)
+    keys.forEach((key) => {
+        const m = data.models[key];
+        if (m.status === 'ok') buildIndividualChart(key, data);
+    });
+}
+
+function switchTab(activeKey) {
+    document.querySelectorAll('.model-tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.key === activeKey);
+    });
+    document.querySelectorAll('[id^="panel-"]').forEach(p => {
+        p.style.display = p.id === `panel-${activeKey}` ? 'block' : 'none';
+    });
+}
+
+function buildIndividualChart(key, data) {
+    const canvasId = `chart-${key}`;
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    if (individualCharts[key]) { individualCharts[key].destroy(); }
+
+    const m = data.models[key];
+    const style = MODEL_STYLES[key];
+
+    const trainDates = data.train.dates;
+    const testDates  = data.test.dates;
+    const allDates   = [...trainDates, ...testDates];
+    const trainLen   = trainDates.length;
+    const testLen    = testDates.length;
+
+    const histData = [
+        ...data.train.values,
+        ...new Array(testLen).fill(null),
+    ];
+    const realTestData = [
+        ...new Array(trainLen).fill(null),
+        ...data.test.values,
+    ];
+    const forecastData = [
+        ...new Array(trainLen).fill(null),
+        ...m.forecast,
+    ];
+    const lowerData = [
+        ...new Array(trainLen).fill(null),
+        ...m.lower_bound,
+    ];
+    const upperData = [
+        ...new Array(trainLen).fill(null),
+        ...m.upper_bound,
+    ];
+
+    individualCharts[key] = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+            labels: allDates,
+            datasets: [
+                {
+                    label: 'Обучающие данные',
+                    data: histData,
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75,192,192,0.15)',
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    tension: 0.1,
+                },
+                {
+                    label: 'Реальные (тест)',
+                    data: realTestData,
+                    borderColor: 'rgb(30, 30, 30)',
+                    backgroundColor: 'rgba(0,0,0,0)',
+                    borderWidth: 2.5,
+                    borderDash: [6, 3],
+                    pointRadius: 3,
+                    tension: 0.1,
+                },
+                {
+                    label: `${style.label} — прогноз`,
+                    data: forecastData,
+                    borderColor: style.color,
+                    backgroundColor: style.fill,
+                    borderWidth: 2,
+                    borderDash: [5, 3],
+                    pointRadius: 3,
+                    tension: 0.1,
+                },
+                {
+                    label: 'Верхняя граница (95%)',
+                    data: upperData,
+                    borderColor: style.color.replace('rgb', 'rgba').replace(')', ', 0.3)'),
+                    backgroundColor: style.fill,
+                    borderWidth: 1,
+                    borderDash: [2, 2],
+                    pointRadius: 0,
+                    fill: false,
+                    tension: 0.1,
+                },
+                {
+                    label: 'Нижняя граница (95%)',
+                    data: lowerData,
+                    borderColor: style.color.replace('rgb', 'rgba').replace(')', ', 0.3)'),
+                    backgroundColor: style.fill,
+                    borderWidth: 1,
+                    borderDash: [2, 2],
+                    pointRadius: 0,
+                    fill: '-1',
+                    tension: 0.1,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                title: {
+                    display: true,
+                    text: `${style.label}: прогноз vs реальные данные`,
+                    font: { size: 13 },
+                },
+                legend: { display: true, position: 'top' },
+            },
+            scales: {
+                x: { ticks: { maxRotation: 45, minRotation: 45, maxTicksLimit: 20 } },
+                y: { title: { display: true, text: 'Значение' } },
+            },
+        },
+    });
+}
+</script>
+</body>
+</html>
