@@ -267,24 +267,28 @@ class HybridModel:
         ВАЖНО: Используются НОРМАЛИЗОВАННЫЕ ошибки (деление на масштаб данных),
         чтобы exp(-β × ER) не обращался в ноль при больших абсолютных MAE.
         
-        NormMAE = MAE / scale, где scale = max(|data|) или std(data)
+        NormMAE = MAE / scale, где scale = max(std, |mean|*0.1, 1.0)
+        
+        ХОЛОДНЫЙ СТАРТ: при первом вызове (error_history = 0) обычный шаг EWA
+        даёт ER_i = (1-λ)·NormMAE = 0.2·NormMAE — разброс ошибок сжимается в 5 раз,
+        и модели с кратно разными MAE получают почти одинаковые веса.
+        Исправление: при холодном старте ER инициализируется напрямую значением NormMAE
+        (эквивалентно сходившемуся EWA с бесконечной историей одинаковых ошибок).
         
         С параметрами:
         - β = 1.2 (чувствительность)
         - λ = 0.8 (затухание)
-        - α(n) = 1 + ln(20/n) (коррекция на малую выборку)
+        - α(n) = 1 + ln(30/n) (коррекция на малую выборку)
         """
         n = len(self.data)
         alpha = self._alpha_correction(n)
-        kappa = self._kappa_correction(n)
         
         # Вычисляем масштаб данных для нормализации ошибок
-        # Используем max(std, |mean|) для робастности
         data_std = np.std(self.data)
         data_mean_abs = np.abs(np.mean(self.data))
         scale = max(data_std, data_mean_abs * 0.1, 1.0)  # Защита от деления на ноль
         
-        print(f"📐 Коэффициенты: α(n={n}) = {alpha:.4f}, κ(n) = {kappa:.4f}")
+        print(f"📐 Коэффициенты: α(n={n}) = {alpha:.4f}")
         print(f"📏 Масштаб для нормализации ошибок: {scale:.4f}")
         
         # Нормализуем ошибки
@@ -297,12 +301,18 @@ class HybridModel:
                 normalized_errors[model] = raw_error / scale
             print(f"   {model}: MAE={raw_error:.4f} → NormMAE={normalized_errors[model]:.4f}")
         
-        # Формула 2.7: Обновление истории ошибок с экспоненциальным сглаживанием
+        # Формула 2.7: Обновление истории ошибок с экспоненциальным сглаживанием.
+        # Холодный старт: если история нулевая, инициализируем напрямую (без λ-демпфирования),
+        # чтобы разброс ошибок полностью отразился в весах.
+        cold_start = all(v == 0.0 for v in self.error_history.values())
         for model in ['sarima', 'xgboost', 'timellm']:
-            self.error_history[model] = (
-                self.decay_factor * self.error_history[model] + 
-                (1 - self.decay_factor) * normalized_errors[model]
-            )
+            if cold_start:
+                self.error_history[model] = normalized_errors[model]
+            else:
+                self.error_history[model] = (
+                    self.decay_factor * self.error_history[model] +
+                    (1 - self.decay_factor) * normalized_errors[model]
+                )
         
         # Формула 2.5/2.11: Вычисление весов
         # w_i = exp(-β × ER_i × α(n)) / Σ  — по диссертации формула 2.5
