@@ -1,0 +1,142 @@
+{
+  "dataset1_unemployment": {
+    "title": "Уровень безработицы в России (% по МОТ), 2010-2019",
+    "target_variable": "unemployment_rate_pct",
+    "train_period": "2010-2019",
+    "test_period": "2020-2023",
+    "links": [
+      {
+        "url": "http://ps.rosstat.gov.ru/unemployment",
+        "description": "Росстат — Понятная статистика: Занятость и безработица (методология МОТ)",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://rosstat.gov.ru/labour_force",
+        "description": "Росстат — Трудовые ресурсы, занятость и безработица (официальные данные)",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://svspb.net/danmark/bezrabotica.php?l=rossija",
+        "description": "Сводная таблица уровня безработицы в России по годам",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://rosstat.gov.ru/storage/mediabank/Trud_2023.pdf",
+        "description": "Росстат — Труд и занятость в России 2023 (PDF, исторические ряды)",
+        "coverage": "2010-2019"
+      }
+    ]
+  },
+  "dataset2_natural_change": {
+    "title": "Естественное движение населения РФ (тыс. чел.), 2010-2019",
+    "target_variable": "nat_change_thous",
+    "train_period": "2010-2019",
+    "test_period": "2020-2023",
+    "links": [
+      {
+        "url": "https://rosstat.gov.ru/compendium/document/13269",
+        "description": "Росстат — Естественное движение населения (сборник абсолютных данных)",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://rosstat.gov.ru/folder/12781",
+        "description": "Росстат — Демография (рождаемость, смертность, естественный прирост)",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://gogov.ru/articles/natural-increase",
+        "description": "Gogov.ru — Смертность и рождаемость в России: статистика по годам",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://rosstat.gov.ru/storage/mediabank/Demogr_ejegod_2023.pdf",
+        "description": "Демографический ежегодник России 2023 (исторические ряды с 2010 г.)",
+        "coverage": "2010-2019"
+      }
+    ]
+  },
+  "dataset3_pensioners": {
+    "title": "Численность пенсионеров РФ (млн чел.) и средняя пенсия (руб.), 2010-2019",
+    "target_variable": "pensioners_mln",
+    "train_period": "2010-2019",
+    "test_period": "2020-2023",
+    "links": [
+      {
+        "url": "https://rosstat.gov.ru/free_doc/new_site/population/urov/urov_p2.htm",
+        "description": "Росстат — Численность пенсионеров и средний размер назначенных пенсий",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://sfr.gov.ru/info/statistics/pension_provision",
+        "description": "СФР (ПФР) — Сведения о численности пенсионеров в системе ПФР",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://rosstat.gov.ru/folder/13877",
+        "description": "Росстат — Старшее поколение: численность пенсионеров по видам пенсий",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://www.demoscope.ru/weekly/2023/0977/barom05.php",
+        "description": "Demoscope Weekly — Численность пенсионеров 2010-2022 (аналитика)",
+        "coverage": "2010-2019"
+      }
+    ]
+  },
+  "dataset4_poverty": {
+    "title": "Уровень бедности в РФ (% населения ниже ПМ), 2010-2019",
+    "target_variable": "poverty_pct",
+    "train_period": "2010-2019",
+    "test_period": "2020-2023",
+    "links": [
+      {
+        "url": "https://rosstat.gov.ru/folder/13397",
+        "description": "Росстат — Уровень жизни: реальные доходы и уровень бедности",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://gogov.ru/articles/standard-of-living",
+        "description": "Gogov.ru — Уровень жизни в России: статистика бедности по годам",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://rosstat.gov.ru/storage/mediabank/Soc_pol_2023.pdf",
+        "description": "Росстат — Социальное положение и уровень жизни населения России 2023",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://rosstat.gov.ru/free_doc/new_site/population/urov/urov_11g.htm",
+        "description": "Росстат — Среднедушевые денежные доходы населения по годам",
+        "coverage": "2010-2019"
+      }
+    ]
+  },
+  "dataset5_life_expectancy": {
+    "title": "Ожидаемая продолжительность жизни при рождении (лет), Россия, 2010-2019",
+    "target_variable": "life_exp_total",
+    "train_period": "2010-2019",
+    "test_period": "2020-2023",
+    "links": [
+      {
+        "url": "https://rosstat.gov.ru/folder/12781",
+        "description": "Росстат — Демография: ожидаемая продолжительность жизни при рождении",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://svspb.net/danmark/zhizn.php?l=rossija",
+        "description": "Сводная таблица ОПЖ в России по годам (Мировой банк / Росстат)",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://rosstat.gov.ru/bgd/regl/b07_13/isswww.exe/stg/d01/04-23.htm",
+        "description": "Росстат — Таблица 4.23 ОПЖ при рождении: исторический ряд",
+        "coverage": "2010-2019"
+      },
+      {
+        "url": "https://eng.rosstat.gov.ru/storage/mediabank/DEM23.pdf",
+        "description": "Демографический ежегодник России 2023 (EN/RU, исторические ряды)",
+        "coverage": "2010-2019"
+      }
+    ]
+  }
+}
