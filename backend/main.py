@@ -985,7 +985,8 @@ async def models_info():
                 "qwen2.5-0.5b": "🟡 Qwen2.5-0.5B (500M, 2024) - vocab=152K, автозамена на smollm2 при <10GB",
                 "llama3.2-1b": "🟡 Llama-3.2-1B (1B) - vocab=128K, автозамена на smollm2 при <10GB",
                 "gemma-2b": "🔴 Gemma-2B (2B) - vocab=256K, автозамена на smollm2 при <10GB",
-                "stablelm-zephyr-3b": "🟡 StableLM-Zephyr-3B (3B) - vocab=50K, 5GB VRAM"
+                "stablelm-zephyr-3b": "🟡 StableLM-Zephyr-3B (3B) - vocab=50K, 5GB VRAM",
+                "qwen3-1.7b": "latest qwen"
             },
             "default_slm": "smollm2-360m",
             "note": "Используйте параметр 'llm_model' в запросе для выбора конкретной SLM"

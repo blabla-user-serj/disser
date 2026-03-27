@@ -748,8 +748,13 @@ Provide a brief analysis (2-3 sentences) focusing on the forecast direction and 
                     'vocab_size': 256000,
                     'description': '🔴 Gemma-2B (2B) - vocab=256K → mapping 1GB, нужно 12GB+'
                 },
+                'qwen3-1.7b': {
+                    'name': 'Qwen/Qwen3-1.7B',
+                    'd_llm': 2048,
+                    'vocab_size': 151936,
+                    'description': '🟡 Qwen2.5-0.5B (500M, 2024) - vocab=152K → mapping 620MB, нужно 8GB+'
             }
-            
+            }
             if model_choice not in model_configs:
                 print(f"⚠️ Неизвестная модель '{model_choice}', используем {default_model} по умолчанию")
                 model_choice = default_model
