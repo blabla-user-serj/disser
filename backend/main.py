@@ -23,6 +23,14 @@ from io import BytesIO, StringIO
 from datetime import datetime, timedelta
 import json
 import re
+from typing import List
+
+# Библиотеки для парсинга документов
+try:
+    import docx
+    import fitz  # PyMuPDF
+except ImportError:
+    pass
 
 
 def sanitize_for_json(value):
@@ -531,6 +539,8 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(500, f"Ошибка обработки файла: {str(e)}")
 
 
+# Методы извлечения текста теперь находятся в LLMExpert.extract_text_from_file
+
 @app.post("/forecast")
 async def forecast(
     dates: str = Form(...),
@@ -539,7 +549,8 @@ async def forecast(
     steps: int = Form(...),
     web_urls: str = Form(None),
     dataset_description: str = Form(None),
-    llm_model: str = Form('qwen2-0.5b')  # Параметр для выбора SLM
+    llm_model: str = Form('qwen2-0.5b'),
+    doc_files: List[UploadFile] = File(None)
 ):
     """Прогнозирование временных рядов"""
     global last_forecast_data
@@ -677,6 +688,24 @@ async def forecast(
                 if web_urls:
                     web_urls_list = [url.strip() for url in web_urls.split('\n') if url.strip()]
                 
+                # Обработка загруженных документов
+                doc_context = ""
+                if doc_files:
+                    for doc_file in doc_files:
+                        try:
+                            content = await doc_file.read()
+                            text = llm_expert.extract_text_from_file(content, doc_file.filename)
+                            if text.strip():
+                                doc_context += f"\n--- Содержимое файла {doc_file.filename} ---\n"
+                                doc_context += text
+                        except Exception as doc_err:
+                            print(f"Ошибка при чтении документа {doc_file.filename}: {doc_err}")
+                
+                # Объединяем описание и контекст из документов
+                full_extra_context = dataset_description if dataset_description else ""
+                if doc_context:
+                    full_extra_context += "\n\n[ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ИЗ ДОКУМЕНТОВ]:\n" + doc_context
+                
                 # Сначала делаем предварительный прогноз для LLM-анализа
                 preliminary_result = model.predict(steps, return_conf_int=True, alpha=0.05)
                 preliminary_forecast = preliminary_result['forecast']
@@ -690,7 +719,7 @@ async def forecast(
                     lower_bound=preliminary_lower,
                     upper_bound=preliminary_upper,
                     web_urls=web_urls_list,
-                    extra_context=dataset_description if dataset_description else ""
+                    extra_context=full_extra_context
                 )
                 
                 correction_factors = correction_result.get('correction_factors', [1.0] * steps)
