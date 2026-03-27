@@ -20,10 +20,10 @@ from html.parser import HTMLParser
 from io import BytesIO
 
 try:
-    import pypdf
-    _PYPDF_AVAILABLE = True
+    import fitz  # PyMuPDF
+    _PYMUPDF_AVAILABLE = True
 except ImportError:
-    _PYPDF_AVAILABLE = False
+    _PYMUPDF_AVAILABLE = False
 
 try:
     import docx as _docx_module
@@ -123,7 +123,7 @@ class LLMExpert:
     @staticmethod
     def extract_text_from_file(content: bytes, filename: str) -> str:
         """
-        Извлекает текст из загруженного файла (PDF или DOCX).
+        Извлекает текст и ТАБЛИЦЫ из загруженного файла (PDF или DOCX).
 
         Args:
             content: сырые байты файла
@@ -134,32 +134,57 @@ class LLMExpert:
         """
         fname = filename.lower()
 
-        # ── PDF ──────────────────────────────────────────────────────
+        # ── PDF (с использованием PyMuPDF для таблиц) ────────────────
         if fname.endswith(".pdf"):
-            if not _PYPDF_AVAILABLE:
-                return "[PDF] Библиотека pypdf не установлена. pip install pypdf"
+            if not _PYMUPDF_AVAILABLE:
+                return "[PDF] Библиотека PyMuPDF (fitz) не установлена. pip install pymupdf"
             try:
-                reader = pypdf.PdfReader(BytesIO(content))
-                pages_text = []
-                for page in reader.pages:
-                    text = page.extract_text() or ""
+                doc = fitz.open(stream=content, filetype="pdf")
+                full_text = []
+                for page in doc:
+                    # Текст страницы
+                    text = page.get_text()
                     if text.strip():
-                        pages_text.append(text.strip())
-                full = "\n".join(pages_text)
-                print(f"   📄 PDF '{filename}': {len(reader.pages)} стр., {len(full)} символов")
+                        full_text.append(text)
+                    
+                    # Попытка извлечения таблиц
+                    try:
+                        tabs = page.find_tables()
+                        for i, table in enumerate(tabs):
+                            full_text.append(f"\n[Таблица {i+1} из PDF]:")
+                            for row in table.extract():
+                                row_text = " | ".join(str(cell).strip() if cell else "" for cell in row)
+                                full_text.append(row_text)
+                    except:
+                        pass
+                full = "\n".join(full_text)
+                print(f"   📄 PDF '{filename}': {len(doc)} стр., {len(full)} символов")
                 return full
             except Exception as e:
                 return f"[PDF] Ошибка чтения '{filename}': {e}"
 
-        # ── DOCX ─────────────────────────────────────────────────────
-        if fname.endswith(".docx"):
+        # ── DOCX (с извлечением таблиц) ──────────────────────────────
+        if fname.endswith(".docx") or fname.endswith(".doc"):
             if not _DOCX_AVAILABLE:
                 return "[DOCX] Библиотека python-docx не установлена. pip install python-docx"
             try:
                 doc = _docx_module.Document(BytesIO(content))
-                paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-                full = "\n".join(paragraphs)
-                print(f"   📄 DOCX '{filename}': {len(paragraphs)} абзацев, {len(full)} символов")
+                full_text = []
+                
+                # Извлекаем параграфы
+                for para in doc.paragraphs:
+                    if para.text.strip():
+                        full_text.append(para.text)
+                        
+                # Извлекаем таблицы
+                for table in doc.tables:
+                    full_text.append("\n[Таблица из Word]:")
+                    for row in table.rows:
+                        row_text = " | ".join(cell.text.strip() for cell in row.cells)
+                        full_text.append(row_text)
+                        
+                full = "\n".join(full_text)
+                print(f"   📄 DOCX '{filename}': {len(full_text)} блоков, {len(full)} символов")
                 return full
             except Exception as e:
                 return f"[DOCX] Ошибка чтения '{filename}': {e}"
