@@ -602,7 +602,8 @@ async def forecast(
             if llm_model in ['smollm2-135m', 'smollm2-360m', 'smollm2-1.7b',
                              'qwen2-0.5b', 'qwen2.5-0.5b', 'llama3.2-1b',
                              'gemma-2b', 'phi3-mini', 'stablelm-zephyr-3b',
-                             'tinyllama', 'phi-1.5', 'gpt2', 'distilgpt2']:
+                             'tinyllama', 'phi-1.5', 'gpt2', 'distilgpt2',
+                             'qwen3-1.7b']:
                 if torch.cuda.is_available():
                     backend = 'neuralforecast'
                     print(f"✅ Используется NeuralForecast с {llm_model}")
