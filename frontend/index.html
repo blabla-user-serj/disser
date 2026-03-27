@@ -85,6 +85,9 @@
                 <h3>🤖 LLM-Эксперт (опционально)</h3>
                 <p class="help-text">Предоставьте веб-ссылки для анализа внешних факторов. LLM-эксперт извлечёт информацию и скорректирует прогноз.</p>
                 
+                <label for="datasetDescription">Описание датасета (контекст):</label>
+                <textarea id="datasetDescription" placeholder="Например: Данные о рождаемости в регионе X за 2010-2023 годы. Учитывать влияние демографической политики."></textarea>
+
                 <label for="webUrls">Веб-ссылки (по одной на строку):</label>
                 <textarea id="webUrls" placeholder="https://example.com/news1&#10;https://example.com/news2&#10;https://example.com/analytics"></textarea>
                 
@@ -198,6 +201,7 @@
             const modelType = document.getElementById('modelSelect').value;
             const steps = parseInt(document.getElementById('stepsInput').value);
             const webUrls = document.getElementById('webUrls').value;
+            const datasetDescription = document.getElementById('datasetDescription').value;
             const slmModel = document.getElementById('slmSelect').value;
 
             const formData = new FormData();
@@ -206,6 +210,7 @@
             formData.append('model_type', modelType);
             formData.append('steps', steps);
             formData.append('web_urls', webUrls);
+            formData.append('dataset_description', datasetDescription);
             
             // Добавляем выбор SLM для TimeLLM и Hybrid
             if (modelType === 'timellm' || modelType === 'hybrid') {

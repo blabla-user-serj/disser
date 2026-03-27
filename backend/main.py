@@ -538,6 +538,7 @@ async def forecast(
     model_type: str = Form(...),
     steps: int = Form(...),
     web_urls: str = Form(None),
+    dataset_description: str = Form(None),
     llm_model: str = Form('qwen2-0.5b')  # Параметр для выбора SLM
 ):
     """Прогнозирование временных рядов"""
@@ -687,7 +688,8 @@ async def forecast(
                     forecast=preliminary_forecast,
                     lower_bound=preliminary_lower,
                     upper_bound=preliminary_upper,
-                    web_urls=web_urls_list
+                    web_urls=web_urls_list,
+                    extra_context=dataset_description if dataset_description else ""
                 )
                 
                 correction_factors = correction_result.get('correction_factors', [1.0] * steps)
