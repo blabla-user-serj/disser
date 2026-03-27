@@ -691,15 +691,20 @@ async def forecast(
                 # Обработка загруженных документов
                 doc_context = ""
                 if doc_files:
+                    print(f"\n📂 Обработка {len(doc_files)} загруженных документов...")
                     for doc_file in doc_files:
                         try:
+                            print(f"   📄 Чтение файла: {doc_file.filename}")
                             content = await doc_file.read()
                             text = llm_expert.extract_text_from_file(content, doc_file.filename)
                             if text.strip():
+                                print(f"   ✅ Успешно извлечено {len(text)} символов из {doc_file.filename}")
                                 doc_context += f"\n--- Содержимое файла {doc_file.filename} ---\n"
                                 doc_context += text
+                            else:
+                                print(f"   ⚠️ Файл {doc_file.filename} пуст или текст не извлечен")
                         except Exception as doc_err:
-                            print(f"Ошибка при чтении документа {doc_file.filename}: {doc_err}")
+                            print(f"   ❌ Ошибка при чтении документа {doc_file.filename}: {doc_err}")
                 
                 # Объединяем описание и контекст из документов
                 full_extra_context = dataset_description if dataset_description else ""
@@ -857,18 +862,15 @@ async def forecast(
         clean_model_info = sanitize_for_json(model_info)
         clean_weights = sanitize_for_json(weights)
         
+        # Формируем ответ, совместимый с фронтендом (ожидающим history_dates и history_values)
         return {
             "status": "success",
-            "historical": {
-                "dates": dates_array.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-                "values": sanitize_array(values_array).tolist()
-            },
-            "forecast": {
-                "dates": forecast_dates.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-                "values": corrected_forecast.tolist(),
-                "lower_bound": corrected_lower.tolist(),
-                "upper_bound": corrected_upper.tolist()
-            },
+            "history_dates": dates_array.strftime('%Y-%m-%d %H:%M:%S').tolist(),
+            "history_values": sanitize_array(values_array).tolist(),
+            "forecast_dates": forecast_dates.strftime('%Y-%m-%d %H:%M:%S').tolist(),
+            "forecast_values": corrected_forecast.tolist(),
+            "forecast_lower": corrected_lower.tolist(),
+            "forecast_upper": corrected_upper.tolist(),
             "frequency": frequency,
             "metrics": clean_metrics,
             "llm_analysis": llm_analysis,
