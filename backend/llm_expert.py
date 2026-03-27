@@ -142,22 +142,39 @@ class LLMExpert:
                 doc = fitz.open(stream=content, filetype="pdf")
                 full_text = []
                 for page in doc:
-                    # Текст страницы
-                    text = page.get_text()
-                    if text.strip():
-                        full_text.append(text)
+                    # 1. Извлекаем текстовые блоки для сохранения структуры
+                    blocks = page.get_text("blocks")
+                    # Сортируем блоки сверху вниз, слева направо
+                    blocks.sort(key=lambda b: (b[1], b[0]))
                     
-                    # Попытка извлечения таблиц
+                    page_content = []
+                    for b in blocks:
+                        if b[4].strip():
+                            page_content.append(b[4].strip())
+                    
+                    if page_content:
+                        full_text.append(f"--- Страница {page.number + 1} ---\n" + "\n".join(page_content))
+                    
+                    # 2. Попытка извлечения таблиц (с улучшенными настройками)
                     try:
                         tabs = page.find_tables()
-                        for i, table in enumerate(tabs):
-                            full_text.append(f"\n[Таблица {i+1} из PDF]:")
-                            for row in table.extract():
-                                row_text = " | ".join(str(cell).strip() if cell else "" for cell in row)
-                                full_text.append(row_text)
+                        for i, table in enumerate(tabs.tables):
+                            full_text.append(f"\n[Таблица {i+1} из PDF (стр. {page.number + 1})]:")
+                            table_data = table.extract()
+                            for row in table_data:
+                                if any(cell and str(cell).strip() for cell in row):
+                                    row_text = " | ".join(str(cell).strip() if cell else "" for cell in row)
+                                    full_text.append(row_text)
                     except:
                         pass
-                full = "\n".join(full_text)
+                
+                # Если текст все еще слишком короткий, пробуем извлечь всё сырым текстом
+                full = "\n\n".join(full_text)
+                if len(full) < 200:
+                    raw_text = []
+                    for page in doc:
+                        raw_text.append(page.get_text())
+                    full = "\n\n".join(raw_text)
                 print(f"   📄 PDF '{filename}': {len(doc)} стр., {len(full)} символов")
                 return full
             except Exception as e:
