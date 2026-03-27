@@ -84,6 +84,7 @@ async def test_forecast(
     test_file: UploadFile = File(...),
     slm_model: str = Form("smollm2-360m"),
     web_urls: str = Form(""),
+    dataset_description: str = Form(""),
     context_files: List[UploadFile] = File(default=[]),
 ):
     """
@@ -154,6 +155,10 @@ async def test_forecast(
             extra_context_parts.append(f"--- {cf.filename} ---\n{text}")
             print(f"[TEST] Прочитан файл '{cf.filename}': {len(text)} символов")
 
+    # Добавляем описание датасета в начало контекста
+    if dataset_description and dataset_description.strip():
+        extra_context_parts.insert(0, f"--- ОПИСАНИЕ ДАТАСЕТА ---\n{dataset_description}")
+        
     extra_context = "\n\n".join(extra_context_parts)
 
     results = {}
