@@ -177,9 +177,14 @@ h3 {
     border: 2px solid #ddd;
     border-radius: 8px;
     font-size: 1em;
-    font-family: monospace;
+    font-family: inherit;
     resize: vertical;
-    min-height: 100px;
+    min-height: 80px;
+    margin-bottom: 15px;
+}
+
+#webUrls {
+    font-family: monospace;
 }
 
 .llm-section textarea:focus {
