@@ -362,13 +362,64 @@
             });
         }
 
-        // Экспорт
+        // Глобальное хранилище для последнего результата прогноза
+        let lastForecastResult = null;
+
+        // Обновляем displayResults, чтобы сохранять результат
+        const originalDisplayResults = displayResults;
+        displayResults = function(result) {
+            lastForecastResult = result;
+            originalDisplayResults(result);
+        };
+
+        // Экспорт CSV через Blob (клиентская генерация для надёжности)
         document.getElementById('exportCsvBtn').addEventListener('click', () => {
-            window.location.href = `${API_URL}/export/csv`;
+            if (!lastForecastResult) {
+                alert('Нет данных для экспорта');
+                return;
+            }
+            
+            let csvContent = "date,actual,forecast,lower_bound,upper_bound,type\n";
+            
+            // История
+            lastForecastResult.history_dates.forEach((date, i) => {
+                csvContent += `${date},${lastForecastResult.history_values[i]},,,historical\n`;
+            });
+            
+            // Прогноз
+            lastForecastResult.forecast_dates.forEach((date, i) => {
+                csvContent += `${date},,${lastForecastResult.forecast_values[i]},${lastForecastResult.forecast_lower[i]},${lastForecastResult.forecast_upper[i]},forecast\n`;
+            });
+            
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            const url = URL.createObjectURL(blob);
+            link.setAttribute("href", url);
+            link.setAttribute("download", `forecast_${new Date().toISOString().slice(0,19).replace(/[:T]/g, '_')}.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         });
 
+        // Экспорт XLSX (через серверный эндпоинт, так как на клиенте сложнее)
         document.getElementById('exportXlsxBtn').addEventListener('click', () => {
-            window.location.href = `${API_URL}/export/xlsx`;
+            // Используем fetch для скачивания файла, чтобы избежать проблем с навигацией
+            fetch(`${API_URL}/export?format=xlsx`)
+                .then(response => {
+                    if (!response.ok) throw new Error('Ошибка сервера при экспорте');
+                    return response.blob();
+                })
+                .then(blob => {
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `forecast_${new Date().toISOString().slice(0,10)}.xlsx`;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                })
+                .catch(err => alert(err.message));
         });
     </script>
 </body>
