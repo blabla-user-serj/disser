@@ -388,7 +388,10 @@
             
             // Прогноз
             lastForecastResult.forecast_dates.forEach((date, i) => {
-                csvContent += `${date},,${lastForecastResult.forecast_values[i]},${lastForecastResult.forecast_lower[i]},${lastForecastResult.forecast_upper[i]},forecast\n`;
+                // Используем правильные ключи lower_bound и upper_bound, возвращаемые бэкендом
+                const lower = (lastForecastResult.lower_bound && lastForecastResult.lower_bound[i] !== undefined) ? lastForecastResult.lower_bound[i] : '';
+                const upper = (lastForecastResult.upper_bound && lastForecastResult.upper_bound[i] !== undefined) ? lastForecastResult.upper_bound[i] : '';
+                csvContent += `${date},,${lastForecastResult.forecast_values[i]},${lower},${upper},forecast\n`;
             });
             
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
