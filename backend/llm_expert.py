@@ -26,6 +26,12 @@ except ImportError:
     _PYMUPDF_AVAILABLE = False
 
 try:
+    import pdfplumber
+    _PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    _PDFPLUMBER_AVAILABLE = False
+
+try:
     import docx as _docx_module
     _DOCX_AVAILABLE = True
 except ImportError:
@@ -134,51 +140,68 @@ class LLMExpert:
         """
         fname = filename.lower()
 
-        # ── PDF (с использованием PyMuPDF для таблиц) ────────────────
+        # ── PDF (многоуровневое извлечение: pdfplumber + PyMuPDF) ──
         if fname.endswith(".pdf"):
-            if not _PYMUPDF_AVAILABLE:
-                return "[PDF] Библиотека PyMuPDF (fitz) не установлена. pip install pymupdf"
-            try:
-                doc = fitz.open(stream=content, filetype="pdf")
-                full_text = []
-                for page in doc:
-                    # 1. Извлекаем текстовые блоки для сохранения структуры
-                    blocks = page.get_text("blocks")
-                    # Сортируем блоки сверху вниз, слева направо
-                    blocks.sort(key=lambda b: (b[1], b[0]))
-                    
-                    page_content = []
-                    for b in blocks:
-                        if b[4].strip():
-                            page_content.append(b[4].strip())
-                    
-                    if page_content:
-                        full_text.append(f"--- Страница {page.number + 1} ---\n" + "\n".join(page_content))
-                    
-                    # 2. Попытка извлечения таблиц (с улучшенными настройками)
-                    try:
-                        tabs = page.find_tables()
-                        for i, table in enumerate(tabs.tables):
-                            full_text.append(f"\n[Таблица {i+1} из PDF (стр. {page.number + 1})]:")
-                            table_data = table.extract()
-                            for row in table_data:
-                                if any(cell and str(cell).strip() for cell in row):
-                                    row_text = " | ".join(str(cell).strip() if cell else "" for cell in row)
-                                    full_text.append(row_text)
-                    except:
-                        pass
-                
-                # Если текст все еще слишком короткий, пробуем извлечь всё сырым текстом
-                full = "\n\n".join(full_text)
-                if len(full) < 200:
-                    raw_text = []
+            full_text = []
+            
+            # Метод 1: pdfplumber (наиболее надежный для текста и таблиц)
+            if _PDFPLUMBER_AVAILABLE:
+                try:
+                    with pdfplumber.open(BytesIO(content)) as pdf:
+                        for i, page in enumerate(pdf.pages):
+                            page_text = page.extract_text(layout=True)
+                            if page_text:
+                                full_text.append(f"--- Страница {i + 1} (текст) ---\n{page_text}")
+                            
+                            # Извлечение таблиц
+                            tables = page.extract_tables()
+                            for j, table in enumerate(tables):
+                                if table:
+                                    full_text.append(f"\n[Таблица {j+1} из PDF (стр. {i+1})]:")
+                                    for row in table:
+                                        if any(cell and str(cell).strip() for cell in row):
+                                            row_text = " | ".join(str(cell).strip() if cell else "" for cell in row)
+                                            full_text.append(row_text)
+                except Exception as e:
+                    print(f"   ⚠️ Ошибка pdfplumber: {e}")
+
+            # Метод 2: PyMuPDF (fallback или дополнение для блоков)
+            if _PYMUPDF_AVAILABLE and (not full_text or len("\n".join(full_text)) < 500):
+                try:
+                    doc = fitz.open(stream=content, filetype="pdf")
                     for page in doc:
-                        raw_text.append(page.get_text())
-                    full = "\n\n".join(raw_text)
-                print(f"   📄 PDF '{filename}': {len(doc)} стр., {len(full)} символов")
-                return full
-            except Exception as e:
-                return f"[PDF] Ошибка чтения '{filename}': {e}"
+                        # Извлекаем блоки (сохраняет структуру колонок)
+                        blocks = page.get_text("blocks")
+                        blocks.sort(key=lambda b: (b[1], b[0]))
+                        
+                        page_content = [b[4].strip() for b in blocks if b[4].strip()]
+                        if page_content:
+                            full_text.append(f"--- Страница {page.number + 1} (блоки) ---\n" + "\n".join(page_content))
+                        
+                        # Таблицы (если pdfplumber не нашел)
+                        if not _PDFPLUMBER_AVAILABLE:
+                            try:
+                                tabs = page.find_tables()
+                                for j, table in enumerate(tabs.tables):
+                                    full_text.append(f"\n[Таблица {j+1} из PDF (стр. {page.number + 1})]:")
+                                    for row in table.extract():
+                                        if any(cell and str(cell).strip() for cell in row):
+                                            full_text.append(" | ".join(str(cell).strip() if cell else "" for cell in row))
+                            except: pass
+                except Exception as e:
+                    print(f"   ⚠️ Ошибка PyMuPDF: {e}")
+
+            full = "\n\n".join(full_text)
+            
+            # Метод 3: Raw text (последний шанс)
+            if len(full) < 100 and _PYMUPDF_AVAILABLE:
+                try:
+                    doc = fitz.open(stream=content, filetype="pdf")
+                    full = "\n\n".join([page.get_text() for page in doc])
+                except: pass
+
+            print(f"   📄 PDF '{filename}': {len(full)} символов извлечено.")
+            return full if full.strip() else f"[PDF] Не удалось извлечь текст из '{filename}'. Возможно, это скан без текстового слоя."
 
         # ── DOCX (с извлечением таблиц) ──────────────────────────────
         if fname.endswith(".docx") or fname.endswith(".doc"):
